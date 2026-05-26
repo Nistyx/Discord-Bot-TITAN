@@ -4,8 +4,10 @@ from discord import app_commands
 import json
 import os
 import asyncio
+import datetime
+from collections import defaultdict
 
-# ─── Config laden ────────────────────────────────────────────────────────────
+# ─── Config ──────────────────────────────────────────────────────────────────
 
 CONFIG_FILE = "config.json"
 
@@ -19,20 +21,6 @@ def save_config(data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# ─── Bot Setup ────────────────────────────────────────────────────────────────
-
-intents = discord.Intents.default()
-intents.voice_states = True
-intents.guilds = True
-intents.members = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-# guild_id -> { "creator_channel_id": int, "category_id": int, "temp_channels": [int, ...] }
-config = load_config()
-
-# ─── Helper ───────────────────────────────────────────────────────────────────
-
 def get_guild_config(guild_id: int) -> dict:
     return config.get(str(guild_id), {})
 
@@ -40,16 +28,139 @@ def save_guild_config(guild_id: int, data: dict):
     config[str(guild_id)] = data
     save_config(config)
 
+# ─── Bot Setup ────────────────────────────────────────────────────────────────
+
+intents = discord.Intents.default()
+intents.voice_states = True
+intents.guilds = True
+intents.members = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+config = load_config()
+
+# xp[guild_id][user_id] = { "xp": int, "level": int, "voice_joined": timestamp }
+xp_data = defaultdict(lambda: defaultdict(lambda: {"xp": 0, "level": 0, "voice_joined": None}))
+# warns[guild_id][user_id] = [ {"reason": str, "time": str}, ... ]
+warns_data = defaultdict(lambda: defaultdict(list))
+
+XP_PER_MESSAGE = 15
+XP_PER_VOICE_MINUTE = 5
+
+def xp_for_level(level):
+    return 100 * (level + 1)
+
+async def send_log(guild, message: str, color=discord.Color.blurple()):
+    cfg = get_guild_config(guild.id)
+    log_channel_id = cfg.get("log_channel_id")
+    if log_channel_id:
+        ch = guild.get_channel(log_channel_id)
+        if ch:
+            embed = discord.Embed(description=message, color=color, timestamp=datetime.datetime.utcnow())
+            try:
+                await ch.send(embed=embed)
+            except:
+                pass
+
+# ─── Helper: Temp-Channel Ownership Check ─────────────────────────────────────
+
+def get_temp_channel(interaction: discord.Interaction):
+    guild_cfg = get_guild_config(interaction.guild.id)
+    temp_channels = guild_cfg.get("temp_channels", {})
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        return None, None, "❌ Du bist in keinem Voice Channel."
+    channel = interaction.user.voice.channel
+    if str(channel.id) not in temp_channels:
+        return None, None, "❌ Du bist nicht in einem temporären Channel."
+    owner_id = temp_channels[str(channel.id)]
+    if owner_id != interaction.user.id:
+        return None, None, "❌ Du bist nicht der Besitzer dieses Channels."
+    return channel, guild_cfg, None
+
 # ─── Events ───────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot ist online als {bot.user} (ID: {bot.user.id})")
+    print(f"✅ Bot online als {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
-        print(f"🔁 {len(synced)} Slash-Commands synchronisiert.")
+        print(f"🔁 {len(synced)} Commands synchronisiert.")
     except Exception as e:
-        print(f"❌ Fehler beim Sync: {e}")
+        print(f"❌ Sync-Fehler: {e}")
+    bot.loop.create_task(voice_xp_loop())
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    cfg = get_guild_config(member.guild.id)
+
+    # Auto-Rolle
+    auto_role_id = cfg.get("auto_role_id")
+    if auto_role_id:
+        role = member.guild.get_role(auto_role_id)
+        if role:
+            try:
+                await member.add_roles(role)
+            except:
+                pass
+
+    # Willkommensnachricht
+    welcome_channel_id = cfg.get("welcome_channel_id")
+    welcome_msg = cfg.get("welcome_message", "Willkommen auf dem Server, {user}! 🎉")
+    if welcome_channel_id:
+        ch = member.guild.get_channel(welcome_channel_id)
+        if ch:
+            embed = discord.Embed(
+                title="👋 Willkommen!",
+                description=welcome_msg.replace("{user}", member.mention),
+                color=discord.Color.green()
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text=f"Mitglied #{member.guild.member_count}")
+            try:
+                await ch.send(embed=embed)
+            except:
+                pass
+
+    await send_log(member.guild, f"➕ **{member}** hat den Server betreten.", discord.Color.green())
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    await send_log(member.guild, f"➖ **{member}** hat den Server verlassen.", discord.Color.red())
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        return
+    await bot.process_commands(message)
+
+    # XP für Nachrichten
+    uid = str(message.author.id)
+    gid = str(message.guild.id)
+    user_xp = xp_data[gid][uid]
+    user_xp["xp"] += XP_PER_MESSAGE
+    needed = xp_for_level(user_xp["level"])
+    if user_xp["xp"] >= needed:
+        user_xp["xp"] -= needed
+        user_xp["level"] += 1
+        lvl = user_xp["level"]
+        try:
+            await message.channel.send(
+                f"🎉 {message.author.mention} hat **Level {lvl}** erreicht!",
+                delete_after=10
+            )
+        except:
+            pass
+        # Level-Rollen vergeben
+        cfg = get_guild_config(message.guild.id)
+        level_roles = cfg.get("level_roles", {})
+        role_id = level_roles.get(str(lvl))
+        if role_id:
+            role = message.guild.get_role(role_id)
+            if role:
+                try:
+                    await message.author.add_roles(role)
+                except:
+                    pass
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -59,9 +170,21 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     creator_id = guild_cfg.get("creator_channel_id")
     category_id = guild_cfg.get("category_id")
-    temp_channels = guild_cfg.get("temp_channels", [])
+    temp_channels = guild_cfg.get("temp_channels", {})
 
-    # ── Nutzer betritt den Creator-Channel → neuen Temp-Channel erstellen ──
+    # XP Voice-Tracking starten/stoppen
+    uid = str(member.id)
+    gid = str(member.guild.id)
+    if after.channel and not before.channel:
+        xp_data[gid][uid]["voice_joined"] = datetime.datetime.utcnow().timestamp()
+    elif before.channel and not after.channel:
+        joined = xp_data[gid][uid].get("voice_joined")
+        if joined:
+            minutes = (datetime.datetime.utcnow().timestamp() - joined) / 60
+            xp_data[gid][uid]["xp"] += int(minutes * XP_PER_VOICE_MINUTE)
+            xp_data[gid][uid]["voice_joined"] = None
+
+    # Temp-Channel erstellen
     if after.channel and after.channel.id == creator_id:
         category = member.guild.get_channel(category_id)
         channel_name = f"🔊 {member.display_name}'s Channel"
@@ -69,207 +192,450 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         overwrites = {
             member.guild.default_role: discord.PermissionOverwrite(connect=True, speak=True),
             member: discord.PermissionOverwrite(
-                manage_channels=True,
-                move_members=True,
-                mute_members=True,
-                connect=True,
-                speak=True
+                manage_channels=True, move_members=True,
+                mute_members=True, connect=True, speak=True
             ),
             member.guild.me: discord.PermissionOverwrite(manage_channels=True, connect=True)
         }
 
         new_channel = await member.guild.create_voice_channel(
-            name=channel_name,
-            category=category,
-            overwrites=overwrites
+            name=channel_name, category=category, overwrites=overwrites
         )
-
         await member.move_to(new_channel)
 
-        temp_channels.append(new_channel.id)
+        temp_channels[str(new_channel.id)] = member.id
         guild_cfg["temp_channels"] = temp_channels
         save_guild_config(member.guild.id, guild_cfg)
 
-        print(f"📢 Temp-Channel erstellt: {new_channel.name} für {member.display_name}")
+        # Info-Embed in den Channel schicken (als Text-Nachricht im nächsten Textkanal in der Kategorie)
+        if category:
+            for ch in category.text_channels:
+                try:
+                    embed = discord.Embed(
+                        title="🔊 Dein temporärer Channel",
+                        description=(
+                            f"{member.mention}, dein Channel **{new_channel.name}** wurde erstellt!\n\n"
+                            "**Verfügbare Befehle:**\n"
+                            "`/rename` — Umbenennen\n"
+                            "`/limit` — Nutzerlimit\n"
+                            "`/lock` / `/unlock` — Sperren/Entsperren\n"
+                            "`/kick` — Nutzer rauswerfen\n"
+                            "`/ban` — Nutzer bannen\n"
+                            "`/invite` — Nutzer einladen\n"
+                            "`/transfer` — Besitz übertragen"
+                        ),
+                        color=discord.Color.blurple()
+                    )
+                    await ch.send(embed=embed, delete_after=30)
+                    break
+                except:
+                    pass
 
-    # ── Nutzer verlässt einen Temp-Channel → löschen wenn leer ──
-    if before.channel and before.channel.id in temp_channels:
+        await send_log(member.guild, f"📢 **{member}** hat Temp-Channel **{new_channel.name}** erstellt.", discord.Color.blurple())
+
+    # Temp-Channel löschen wenn leer
+    if before.channel and str(before.channel.id) in temp_channels:
         channel = before.channel
         if len(channel.members) == 0:
+            name = channel.name
             await channel.delete(reason="Temporärer Channel ist leer.")
-            temp_channels.remove(channel.id)
+            del temp_channels[str(channel.id)]
             guild_cfg["temp_channels"] = temp_channels
             save_guild_config(member.guild.id, guild_cfg)
-            print(f"🗑️  Temp-Channel gelöscht: {channel.name}")
+            await send_log(member.guild, f"🗑️ Temp-Channel **{name}** wurde gelöscht.", discord.Color.orange())
 
-# ─── Slash Commands ───────────────────────────────────────────────────────────
+# ─── XP Voice Loop ────────────────────────────────────────────────────────────
 
-@bot.tree.command(name="setup", description="Richtet das TempVC-System ein (nur Admins).")
-@app_commands.describe(
-    channel="Der 'Erstellen'-Channel, den Nutzer betreten sollen",
-    category="Kategorie, in der Temp-Channels erstellt werden"
-)
-@app_commands.checks.has_permissions(administrator=True)
-async def setup(interaction: discord.Interaction, channel: discord.VoiceChannel, category: discord.CategoryChannel):
-    guild_cfg = get_guild_config(interaction.guild.id)
-    guild_cfg["creator_channel_id"] = channel.id
-    guild_cfg["category_id"] = category.id
-    guild_cfg.setdefault("temp_channels", [])
-    save_guild_config(interaction.guild.id, guild_cfg)
+async def voice_xp_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        for guild in bot.guilds:
+            for member in guild.members:
+                if member.voice and member.voice.channel and not member.bot:
+                    uid = str(member.id)
+                    gid = str(guild.id)
+                    xp_data[gid][uid]["xp"] += XP_PER_VOICE_MINUTE
 
-    embed = discord.Embed(
-        title="✅ TempVC Setup abgeschlossen",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="Creator-Channel", value=channel.mention, inline=True)
-    embed.add_field(name="Kategorie", value=category.name, inline=True)
-    embed.set_footer(text="Nutzer können jetzt durch Betreten des Channels eigene Räume erstellen.")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+# ══════════════════════════════════════════════════════════════════════════════
+# VOICE CHANNEL COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="vc-rename", description="Benenne deinen temporären Voice Channel um.")
-@app_commands.describe(name="Neuer Name für deinen Channel")
-async def vc_rename(interaction: discord.Interaction, name: str):
-    guild_cfg = get_guild_config(interaction.guild.id)
-    temp_channels = guild_cfg.get("temp_channels", [])
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("❌ Du bist in keinem Voice Channel.", ephemeral=True)
-        return
-
-    channel = interaction.user.voice.channel
-    if channel.id not in temp_channels:
-        await interaction.response.send_message("❌ Du bist nicht in einem temporären Channel.", ephemeral=True)
-        return
-
-    if not channel.permissions_for(interaction.user).manage_channels:
-        await interaction.response.send_message("❌ Du bist nicht der Besitzer dieses Channels.", ephemeral=True)
-        return
-
-    old_name = channel.name
+@bot.tree.command(name="rename", description="Benenne deinen Channel um.")
+@app_commands.describe(name="Neuer Name")
+async def rename(interaction: discord.Interaction, name: str):
+    channel, _, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
     await channel.edit(name=name)
-    await interaction.response.send_message(f"✅ Channel umbenannt: **{old_name}** → **{name}**", ephemeral=True)
+    await interaction.response.send_message(f"✅ Channel umbenannt zu **{name}**.", ephemeral=True)
 
-@bot.tree.command(name="vc-limit", description="Setze ein Nutzerlimit für deinen Channel.")
-@app_commands.describe(limit="Maximale Nutzerzahl (0 = unbegrenzt)")
-async def vc_limit(interaction: discord.Interaction, limit: int):
-    guild_cfg = get_guild_config(interaction.guild.id)
-    temp_channels = guild_cfg.get("temp_channels", [])
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("❌ Du bist in keinem Voice Channel.", ephemeral=True)
-        return
-
-    channel = interaction.user.voice.channel
-    if channel.id not in temp_channels:
-        await interaction.response.send_message("❌ Du bist nicht in einem temporären Channel.", ephemeral=True)
-        return
-
-    if not channel.permissions_for(interaction.user).manage_channels:
-        await interaction.response.send_message("❌ Du bist nicht der Besitzer dieses Channels.", ephemeral=True)
-        return
-
-    await channel.edit(user_limit=max(0, min(limit, 99)))
-    msg = f"✅ Nutzerlimit gesetzt auf **{limit}**." if limit > 0 else "✅ Nutzerlimit entfernt (unbegrenzt)."
+@bot.tree.command(name="limit", description="Setze ein Nutzerlimit (0 = unbegrenzt).")
+@app_commands.describe(anzahl="Maximale Nutzerzahl")
+async def limit(interaction: discord.Interaction, anzahl: int):
+    channel, _, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
+    await channel.edit(user_limit=max(0, min(anzahl, 99)))
+    msg = f"✅ Limit gesetzt: **{anzahl}**." if anzahl > 0 else "✅ Limit entfernt."
     await interaction.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="vc-lock", description="Sperre deinen Channel für neue Nutzer.")
-async def vc_lock(interaction: discord.Interaction):
-    guild_cfg = get_guild_config(interaction.guild.id)
-    temp_channels = guild_cfg.get("temp_channels", [])
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("❌ Du bist in keinem Voice Channel.", ephemeral=True)
-        return
-
-    channel = interaction.user.voice.channel
-    if channel.id not in temp_channels:
-        await interaction.response.send_message("❌ Du bist nicht in einem temporären Channel.", ephemeral=True)
-        return
-
-    if not channel.permissions_for(interaction.user).manage_channels:
-        await interaction.response.send_message("❌ Du bist nicht der Besitzer dieses Channels.", ephemeral=True)
-        return
-
+@bot.tree.command(name="lock", description="Sperre deinen Channel.")
+async def lock(interaction: discord.Interaction):
+    channel, _, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
     await channel.set_permissions(interaction.guild.default_role, connect=False)
-    await interaction.response.send_message("🔒 Channel gesperrt. Niemand kann mehr joinen.", ephemeral=True)
+    await interaction.response.send_message("🔒 Channel gesperrt.", ephemeral=True)
 
-@bot.tree.command(name="vc-unlock", description="Entsperre deinen Channel wieder.")
-async def vc_unlock(interaction: discord.Interaction):
-    guild_cfg = get_guild_config(interaction.guild.id)
-    temp_channels = guild_cfg.get("temp_channels", [])
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("❌ Du bist in keinem Voice Channel.", ephemeral=True)
-        return
-
-    channel = interaction.user.voice.channel
-    if channel.id not in temp_channels:
-        await interaction.response.send_message("❌ Du bist nicht in einem temporären Channel.", ephemeral=True)
-        return
-
-    if not channel.permissions_for(interaction.user).manage_channels:
-        await interaction.response.send_message("❌ Du bist nicht der Besitzer dieses Channels.", ephemeral=True)
-        return
-
+@bot.tree.command(name="unlock", description="Entsperre deinen Channel.")
+async def unlock(interaction: discord.Interaction):
+    channel, _, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
     await channel.set_permissions(interaction.guild.default_role, connect=True)
-    await interaction.response.send_message("🔓 Channel entsperrt. Jeder kann wieder joinen.", ephemeral=True)
+    await interaction.response.send_message("🔓 Channel entsperrt.", ephemeral=True)
 
-@bot.tree.command(name="vc-kick", description="Kicke einen Nutzer aus deinem Channel.")
-@app_commands.describe(member="Der Nutzer, den du kicken möchtest")
-async def vc_kick(interaction: discord.Interaction, member: discord.Member):
-    guild_cfg = get_guild_config(interaction.guild.id)
-    temp_channels = guild_cfg.get("temp_channels", [])
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("❌ Du bist in keinem Voice Channel.", ephemeral=True)
-        return
-
-    channel = interaction.user.voice.channel
-    if channel.id not in temp_channels:
-        await interaction.response.send_message("❌ Du bist nicht in einem temporären Channel.", ephemeral=True)
-        return
-
-    if not channel.permissions_for(interaction.user).move_members:
-        await interaction.response.send_message("❌ Du bist nicht der Besitzer dieses Channels.", ephemeral=True)
-        return
-
-    if member.voice and member.voice.channel == channel:
-        await member.move_to(None)
-        await interaction.response.send_message(f"👢 **{member.display_name}** wurde aus dem Channel geworfen.", ephemeral=True)
+@bot.tree.command(name="kick", description="Werfe einen Nutzer aus deinem Channel.")
+@app_commands.describe(user="Nutzer")
+async def kick_vc(interaction: discord.Interaction, user: discord.Member):
+    channel, _, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
+    if user.voice and user.voice.channel == channel:
+        await user.move_to(None)
+        await interaction.response.send_message(f"👢 **{user.display_name}** wurde rausgeworfen.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"❌ **{member.display_name}** ist nicht in deinem Channel.", ephemeral=True)
+        await interaction.response.send_message(f"❌ **{user.display_name}** ist nicht in deinem Channel.", ephemeral=True)
 
-@bot.tree.command(name="vc-info", description="Zeigt das aktuelle Setup des TempVC-Systems an.")
+@bot.tree.command(name="ban", description="Banne einen Nutzer aus deinem Channel.")
+@app_commands.describe(user="Nutzer")
+async def ban_vc(interaction: discord.Interaction, user: discord.Member):
+    channel, _, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
+    await channel.set_permissions(user, connect=False, speak=False)
+    if user.voice and user.voice.channel == channel:
+        await user.move_to(None)
+    await interaction.response.send_message(f"🚫 **{user.display_name}** wurde aus dem Channel gebannt.", ephemeral=True)
+
+@bot.tree.command(name="invite", description="Lade einen Nutzer in deinen gesperrten Channel ein.")
+@app_commands.describe(user="Nutzer")
+async def invite_vc(interaction: discord.Interaction, user: discord.Member):
+    channel, _, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
+    await channel.set_permissions(user, connect=True)
+    await interaction.response.send_message(f"✅ **{user.display_name}** wurde eingeladen.", ephemeral=True)
+    try:
+        await user.send(f"📨 **{interaction.user.display_name}** hat dich in **{channel.name}** auf **{interaction.guild.name}** eingeladen!")
+    except:
+        pass
+
+@bot.tree.command(name="transfer", description="Übertrage den Channel-Besitz.")
+@app_commands.describe(user="Neuer Besitzer")
+async def transfer(interaction: discord.Interaction, user: discord.Member):
+    channel, guild_cfg, err = get_temp_channel(interaction)
+    if err:
+        return await interaction.response.send_message(err, ephemeral=True)
+    temp_channels = guild_cfg.get("temp_channels", {})
+    temp_channels[str(channel.id)] = user.id
+    # Berechtigungen tauschen
+    await channel.set_permissions(interaction.user, manage_channels=False, move_members=False, mute_members=False)
+    await channel.set_permissions(user, manage_channels=True, move_members=True, mute_members=True, connect=True, speak=True)
+    save_guild_config(interaction.guild.id, guild_cfg)
+    await interaction.response.send_message(f"✅ Besitz an **{user.display_name}** übertragen.", ephemeral=True)
+
+@bot.tree.command(name="cleanup", description="Löscht alle leeren Temp-Channels (Admin).")
 @app_commands.checks.has_permissions(administrator=True)
-async def vc_info(interaction: discord.Interaction):
+async def cleanup(interaction: discord.Interaction):
     guild_cfg = get_guild_config(interaction.guild.id)
+    temp_channels = guild_cfg.get("temp_channels", {})
+    deleted = 0
+    to_remove = []
+    for ch_id in list(temp_channels.keys()):
+        ch = interaction.guild.get_channel(int(ch_id))
+        if ch is None or len(ch.members) == 0:
+            if ch:
+                await ch.delete(reason="Cleanup")
+            to_remove.append(ch_id)
+            deleted += 1
+    for ch_id in to_remove:
+        del temp_channels[ch_id]
+    guild_cfg["temp_channels"] = temp_channels
+    save_guild_config(interaction.guild.id, guild_cfg)
+    await interaction.response.send_message(f"🧹 {deleted} verwaiste Channel(s) gelöscht.", ephemeral=True)
 
-    if not guild_cfg:
-        await interaction.response.send_message("❌ Das TempVC-System ist noch nicht eingerichtet. Nutze `/setup`.", ephemeral=True)
-        return
+# ══════════════════════════════════════════════════════════════════════════════
+# MODERATION COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
 
-    creator = interaction.guild.get_channel(guild_cfg.get("creator_channel_id"))
-    category = interaction.guild.get_channel(guild_cfg.get("category_id"))
-    temp_count = len(guild_cfg.get("temp_channels", []))
+@bot.tree.command(name="warn", description="Verwarnt einen Nutzer.")
+@app_commands.describe(user="Nutzer", grund="Grund")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def warn(interaction: discord.Interaction, user: discord.Member, grund: str):
+    gid = str(interaction.guild.id)
+    uid = str(user.id)
+    warns_data[gid][uid].append({"reason": grund, "time": str(datetime.datetime.utcnow())})
+    count = len(warns_data[gid][uid])
+    await interaction.response.send_message(f"⚠️ **{user.display_name}** verwarnt. ({count} Verwarnung(en) insgesamt)\nGrund: {grund}", ephemeral=True)
+    try:
+        await user.send(f"⚠️ Du wurdest auf **{interaction.guild.name}** verwarnt.\nGrund: **{grund}**")
+    except:
+        pass
+    await send_log(interaction.guild, f"⚠️ **{user}** wurde von **{interaction.user}** verwarnt. Grund: {grund}", discord.Color.yellow())
 
-    embed = discord.Embed(title="📋 TempVC Status", color=discord.Color.blurple())
-    embed.add_field(name="Creator-Channel", value=creator.mention if creator else "Nicht gefunden", inline=True)
-    embed.add_field(name="Kategorie", value=category.name if category else "Nicht gefunden", inline=True)
-    embed.add_field(name="Aktive Temp-Channels", value=str(temp_count), inline=True)
+@bot.tree.command(name="warns", description="Zeigt Verwarnungen eines Nutzers.")
+@app_commands.describe(user="Nutzer")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def warns(interaction: discord.Interaction, user: discord.Member):
+    gid = str(interaction.guild.id)
+    uid = str(user.id)
+    user_warns = warns_data[gid][uid]
+    if not user_warns:
+        return await interaction.response.send_message(f"✅ **{user.display_name}** hat keine Verwarnungen.", ephemeral=True)
+    embed = discord.Embed(title=f"⚠️ Verwarnungen von {user.display_name}", color=discord.Color.yellow())
+    for i, w in enumerate(user_warns, 1):
+        embed.add_field(name=f"#{i}", value=f"**Grund:** {w['reason']}\n**Zeit:** {w['time'][:16]}", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="clearwarns", description="Löscht alle Verwarnungen eines Nutzers.")
+@app_commands.describe(user="Nutzer")
+@app_commands.checks.has_permissions(administrator=True)
+async def clearwarns(interaction: discord.Interaction, user: discord.Member):
+    gid = str(interaction.guild.id)
+    uid = str(user.id)
+    warns_data[gid][uid] = []
+    await interaction.response.send_message(f"✅ Verwarnungen von **{user.display_name}** gelöscht.", ephemeral=True)
+
+@bot.tree.command(name="mute", description="Mutet einen Nutzer für X Minuten.")
+@app_commands.describe(user="Nutzer", minuten="Dauer in Minuten", grund="Grund")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def mute(interaction: discord.Interaction, user: discord.Member, minuten: int, grund: str = "Kein Grund angegeben"):
+    duration = datetime.timedelta(minutes=minuten)
+    await user.timeout(duration, reason=grund)
+    await interaction.response.send_message(f"🔇 **{user.display_name}** für **{minuten} Minuten** gemutet.\nGrund: {grund}", ephemeral=True)
+    await send_log(interaction.guild, f"🔇 **{user}** wurde von **{interaction.user}** für {minuten} Min. gemutet. Grund: {grund}", discord.Color.orange())
+
+@bot.tree.command(name="unmute", description="Entfernt den Mute eines Nutzers.")
+@app_commands.describe(user="Nutzer")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def unmute(interaction: discord.Interaction, user: discord.Member):
+    await user.timeout(None)
+    await interaction.response.send_message(f"🔊 **{user.display_name}** wurde entmutet.", ephemeral=True)
+
+@bot.tree.command(name="tempban", description="Bannt einen Nutzer für X Tage.")
+@app_commands.describe(user="Nutzer", tage="Dauer in Tagen", grund="Grund")
+@app_commands.checks.has_permissions(ban_members=True)
+async def tempban(interaction: discord.Interaction, user: discord.Member, tage: int, grund: str = "Kein Grund angegeben"):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await user.send(f"🚫 Du wurdest von **{interaction.guild.name}** für **{tage} Tag(e)** gebannt.\nGrund: **{grund}**")
+    except:
+        pass
+    await user.ban(reason=f"{grund} (Tempban: {tage} Tage)")
+    await interaction.followup.send(f"🚫 **{user.display_name}** für **{tage} Tag(e)** gebannt.", ephemeral=True)
+    await send_log(interaction.guild, f"🚫 **{user}** wurde von **{interaction.user}** für {tage} Tag(e) gebannt. Grund: {grund}", discord.Color.red())
+    await asyncio.sleep(tage * 86400)
+    try:
+        await interaction.guild.unban(user, reason="Tempban abgelaufen")
+    except:
+        pass
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEVEL SYSTEM
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="level", description="Zeigt dein Level und XP.")
+@app_commands.describe(user="Nutzer (optional)")
+async def level(interaction: discord.Interaction, user: discord.Member = None):
+    user = user or interaction.user
+    gid = str(interaction.guild.id)
+    uid = str(user.id)
+    data = xp_data[gid][uid]
+    lvl = data["level"]
+    xp = data["xp"]
+    needed = xp_for_level(lvl)
+    bar_filled = int((xp / needed) * 20)
+    bar = "█" * bar_filled + "░" * (20 - bar_filled)
+    embed = discord.Embed(title=f"📊 {user.display_name}", color=discord.Color.blurple())
+    embed.add_field(name="Level", value=str(lvl), inline=True)
+    embed.add_field(name="XP", value=f"{xp}/{needed}", inline=True)
+    embed.add_field(name="Fortschritt", value=f"`{bar}`", inline=False)
+    embed.set_thumbnail(url=user.display_avatar.url)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="leaderboard", description="Zeigt die Top 10 XP-Rangliste.")
+async def leaderboard(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    data = xp_data[gid]
+    sorted_users = sorted(data.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)[:10]
+    embed = discord.Embed(title="🏆 XP Rangliste", color=discord.Color.gold())
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (uid, d) in enumerate(sorted_users):
+        member = interaction.guild.get_member(int(uid))
+        name = member.display_name if member else f"Unbekannt ({uid})"
+        prefix = medals[i] if i < 3 else f"**#{i+1}**"
+        embed.add_field(name=f"{prefix} {name}", value=f"Level {d['level']} • {d['xp']} XP", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="setlevelrole", description="Weise einer Level eine Rolle zu (Admin).")
+@app_commands.describe(level_num="Level", role="Rolle")
+@app_commands.checks.has_permissions(administrator=True)
+async def setlevelrole(interaction: discord.Interaction, level_num: int, role: discord.Role):
+    cfg = get_guild_config(interaction.guild.id)
+    level_roles = cfg.get("level_roles", {})
+    level_roles[str(level_num)] = role.id
+    cfg["level_roles"] = level_roles
+    save_guild_config(interaction.guild.id, cfg)
+    await interaction.response.send_message(f"✅ Level **{level_num}** → Rolle **{role.name}** gesetzt.", ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUN COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
+
+import random
+
+@bot.tree.command(name="würfel", description="Würfle einen W6 (oder anderen Würfel).")
+@app_commands.describe(seiten="Anzahl der Seiten (Standard: 6)")
+async def wuerfel(interaction: discord.Interaction, seiten: int = 6):
+    result = random.randint(1, max(2, seiten))
+    await interaction.response.send_message(f"🎲 **{interaction.user.display_name}** würfelt einen W{seiten}: **{result}**!")
+
+@bot.tree.command(name="münze", description="Wirf eine Münze.")
+async def muenze(interaction: discord.Interaction):
+    result = random.choice(["Kopf 👑", "Zahl 🔢"])
+    await interaction.response.send_message(f"🪙 **{result}!**")
+
+@bot.tree.command(name="poll", description="Erstelle eine Abstimmung.")
+@app_commands.describe(frage="Die Frage", option1="Option 1", option2="Option 2", option3="Option 3 (optional)", option4="Option 4 (optional)")
+async def poll(interaction: discord.Interaction, frage: str, option1: str, option2: str, option3: str = None, option4: str = None):
+    options = [option1, option2]
+    if option3: options.append(option3)
+    if option4: options.append(option4)
+    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    description = "\n".join([f"{emojis[i]} {opt}" for i, opt in enumerate(options)])
+    embed = discord.Embed(title=f"📊 {frage}", description=description, color=discord.Color.blurple())
+    embed.set_footer(text=f"Abstimmung von {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+    msg = await interaction.original_response()
+    for i in range(len(options)):
+        await msg.add_reaction(emojis[i])
+
+@bot.tree.command(name="remind", description="Setze eine Erinnerung.")
+@app_commands.describe(minuten="In wie vielen Minuten?", nachricht="Woran soll ich erinnern?")
+async def remind(interaction: discord.Interaction, minuten: int, nachricht: str):
+    await interaction.response.send_message(f"⏰ Ich erinnere dich in **{minuten} Minuten** an: **{nachricht}**", ephemeral=True)
+    await asyncio.sleep(minuten * 60)
+    try:
+        await interaction.user.send(f"⏰ Erinnerung: **{nachricht}**")
+    except:
+        pass
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INFO COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="userinfo", description="Zeigt Infos über einen Nutzer.")
+@app_commands.describe(user="Nutzer (optional)")
+async def userinfo(interaction: discord.Interaction, user: discord.Member = None):
+    user = user or interaction.user
+    embed = discord.Embed(title=f"👤 {user}", color=user.color)
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.add_field(name="ID", value=str(user.id), inline=True)
+    embed.add_field(name="Beigetreten", value=user.joined_at.strftime("%d.%m.%Y"), inline=True)
+    embed.add_field(name="Account erstellt", value=user.created_at.strftime("%d.%m.%Y"), inline=True)
+    roles = [r.mention for r in user.roles if r != interaction.guild.default_role]
+    embed.add_field(name=f"Rollen ({len(roles)})", value=", ".join(roles) if roles else "Keine", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="serverinfo", description="Zeigt Infos über den Server.")
+async def serverinfo(interaction: discord.Interaction):
+    g = interaction.guild
+    embed = discord.Embed(title=f"🏠 {g.name}", color=discord.Color.blurple())
+    if g.icon:
+        embed.set_thumbnail(url=g.icon.url)
+    embed.add_field(name="Mitglieder", value=str(g.member_count), inline=True)
+    embed.add_field(name="Erstellt", value=g.created_at.strftime("%d.%m.%Y"), inline=True)
+    embed.add_field(name="Boost Level", value=str(g.premium_tier), inline=True)
+    embed.add_field(name="Textkanäle", value=str(len(g.text_channels)), inline=True)
+    embed.add_field(name="Voicekanäle", value=str(len(g.voice_channels)), inline=True)
+    embed.add_field(name="Rollen", value=str(len(g.roles)), inline=True)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="botinfo", description="Zeigt alle Bot-Funktionen.")
+async def botinfo(interaction: discord.Interaction):
+    embed = discord.Embed(title="🤖 Bot-Befehle Übersicht", color=discord.Color.blurple())
+    embed.add_field(name="🔊 Voice Channels", value="`/rename` `/limit` `/lock` `/unlock` `/kick` `/ban` `/invite` `/transfer` `/cleanup`", inline=False)
+    embed.add_field(name="🛡️ Moderation", value="`/warn` `/warns` `/clearwarns` `/mute` `/unmute` `/tempban`", inline=False)
+    embed.add_field(name="📊 Level System", value="`/level` `/leaderboard` `/setlevelrole`", inline=False)
+    embed.add_field(name="🎮 Fun", value="`/würfel` `/münze` `/poll` `/remind`", inline=False)
+    embed.add_field(name="ℹ️ Info", value="`/userinfo` `/serverinfo` `/botinfo`", inline=False)
+    embed.add_field(name="⚙️ Admin Setup", value="`/setup` `/setwelcome` `/setlog` `/setautorole`", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADMIN SETUP COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="setup", description="Richtet das TempVC-System ein.")
+@app_commands.describe(channel="Creator-Channel", category="Kategorie für Temp-Channels")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup(interaction: discord.Interaction, channel: discord.VoiceChannel, category: discord.CategoryChannel):
+    cfg = get_guild_config(interaction.guild.id)
+    cfg["creator_channel_id"] = channel.id
+    cfg["category_id"] = category.id
+    cfg.setdefault("temp_channels", {})
+    save_guild_config(interaction.guild.id, cfg)
+    embed = discord.Embed(title="✅ TempVC Setup abgeschlossen", color=discord.Color.green())
+    embed.add_field(name="Creator-Channel", value=channel.mention, inline=True)
+    embed.add_field(name="Kategorie", value=category.name, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="setwelcome", description="Setzt den Willkommens-Channel und die Nachricht.")
+@app_commands.describe(channel="Willkommens-Channel", nachricht="Nachricht ({user} = Erwähnung)")
+@app_commands.checks.has_permissions(administrator=True)
+async def setwelcome(interaction: discord.Interaction, channel: discord.TextChannel, nachricht: str = "Willkommen auf dem Server, {user}! 🎉"):
+    cfg = get_guild_config(interaction.guild.id)
+    cfg["welcome_channel_id"] = channel.id
+    cfg["welcome_message"] = nachricht
+    save_guild_config(interaction.guild.id, cfg)
+    await interaction.response.send_message(f"✅ Willkommens-Channel: {channel.mention}\nNachricht: {nachricht}", ephemeral=True)
+
+@bot.tree.command(name="setlog", description="Setzt den Log-Channel.")
+@app_commands.describe(channel="Log-Channel")
+@app_commands.checks.has_permissions(administrator=True)
+async def setlog(interaction: discord.Interaction, channel: discord.TextChannel):
+    cfg = get_guild_config(interaction.guild.id)
+    cfg["log_channel_id"] = channel.id
+    save_guild_config(interaction.guild.id, cfg)
+    await interaction.response.send_message(f"✅ Log-Channel: {channel.mention}", ephemeral=True)
+
+@bot.tree.command(name="setautorole", description="Setzt die Auto-Rolle für neue Mitglieder.")
+@app_commands.describe(role="Rolle")
+@app_commands.checks.has_permissions(administrator=True)
+async def setautorole(interaction: discord.Interaction, role: discord.Role):
+    cfg = get_guild_config(interaction.guild.id)
+    cfg["auto_role_id"] = role.id
+    save_guild_config(interaction.guild.id, cfg)
+    await interaction.response.send_message(f"✅ Auto-Rolle: **{role.name}**", ephemeral=True)
 
 # ─── Error Handler ────────────────────────────────────────────────────────────
 
-@setup.error
-@vc_info.error
-async def admin_error(interaction: discord.Interaction, error):
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ Du brauchst Admin-Rechte für diesen Befehl.", ephemeral=True)
+        await interaction.response.send_message("❌ Du hast keine Berechtigung für diesen Befehl.", ephemeral=True)
+    else:
+        try:
+            await interaction.response.send_message(f"❌ Fehler: {str(error)}", ephemeral=True)
+        except:
+            pass
 
 # ─── Start ────────────────────────────────────────────────────────────────────
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    raise ValueError("❌ DISCORD_TOKEN Umgebungsvariable nicht gesetzt!")
+    raise ValueError("❌ DISCORD_TOKEN nicht gesetzt!")
 
 bot.run(TOKEN)
