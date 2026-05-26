@@ -5,6 +5,9 @@ import json
 import os
 import asyncio
 import datetime
+import random
+import urllib.request
+import urllib.parse
 from collections import defaultdict
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -39,10 +42,12 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 config = load_config()
 
-# xp[guild_id][user_id] = { "xp": int, "level": int, "voice_joined": timestamp }
 xp_data = defaultdict(lambda: defaultdict(lambda: {"xp": 0, "level": 0, "voice_joined": None}))
-# warns[guild_id][user_id] = [ {"reason": str, "time": str}, ... ]
 warns_data = defaultdict(lambda: defaultdict(list))
+# Musik-Queue: guild_id -> list of {"title": str, "url": str}
+music_queues = defaultdict(list)
+# Aktive Giveaways: guild_id -> list of {"message_id", "channel_id", "prize", "end_time", "winners"}
+giveaways = defaultdict(list)
 
 XP_PER_MESSAGE = 15
 XP_PER_VOICE_MINUTE = 5
@@ -61,8 +66,6 @@ async def send_log(guild, message: str, color=discord.Color.blurple()):
                 await ch.send(embed=embed)
             except:
                 pass
-
-# ─── Helper: Temp-Channel Ownership Check ─────────────────────────────────────
 
 def get_temp_channel(interaction: discord.Interaction):
     guild_cfg = get_guild_config(interaction.guild.id)
@@ -88,12 +91,11 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Sync-Fehler: {e}")
     bot.loop.create_task(voice_xp_loop())
+    bot.loop.create_task(giveaway_loop())
 
 @bot.event
 async def on_member_join(member: discord.Member):
     cfg = get_guild_config(member.guild.id)
-
-    # Auto-Rolle
     auto_role_id = cfg.get("auto_role_id")
     if auto_role_id:
         role = member.guild.get_role(auto_role_id)
@@ -102,8 +104,6 @@ async def on_member_join(member: discord.Member):
                 await member.add_roles(role)
             except:
                 pass
-
-    # Willkommensnachricht
     welcome_channel_id = cfg.get("welcome_channel_id")
     welcome_msg = cfg.get("welcome_message", "Willkommen auf dem Server, {user}! 🎉")
     if welcome_channel_id:
@@ -120,7 +120,6 @@ async def on_member_join(member: discord.Member):
                 await ch.send(embed=embed)
             except:
                 pass
-
     await send_log(member.guild, f"➕ **{member}** hat den Server betreten.", discord.Color.green())
 
 @bot.event
@@ -132,8 +131,6 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
     await bot.process_commands(message)
-
-    # XP für Nachrichten
     uid = str(message.author.id)
     gid = str(message.guild.id)
     user_xp = xp_data[gid][uid]
@@ -144,13 +141,9 @@ async def on_message(message: discord.Message):
         user_xp["level"] += 1
         lvl = user_xp["level"]
         try:
-            await message.channel.send(
-                f"🎉 {message.author.mention} hat **Level {lvl}** erreicht!",
-                delete_after=10
-            )
+            await message.channel.send(f"🎉 {message.author.mention} hat **Level {lvl}** erreicht!", delete_after=10)
         except:
             pass
-        # Level-Rollen vergeben
         cfg = get_guild_config(message.guild.id)
         level_roles = cfg.get("level_roles", {})
         role_id = level_roles.get(str(lvl))
@@ -167,12 +160,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     guild_cfg = get_guild_config(member.guild.id)
     if not guild_cfg:
         return
-
     creator_id = guild_cfg.get("creator_channel_id")
     category_id = guild_cfg.get("category_id")
     temp_channels = guild_cfg.get("temp_channels", {})
 
-    # XP Voice-Tracking starten/stoppen
     uid = str(member.id)
     gid = str(member.guild.id)
     if after.channel and not before.channel:
@@ -184,45 +175,29 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             xp_data[gid][uid]["xp"] += int(minutes * XP_PER_VOICE_MINUTE)
             xp_data[gid][uid]["voice_joined"] = None
 
-    # Temp-Channel erstellen
     if after.channel and after.channel.id == creator_id:
         category = member.guild.get_channel(category_id)
         channel_name = f"🔊 {member.display_name}'s Channel"
-
         overwrites = {
             member.guild.default_role: discord.PermissionOverwrite(connect=True, speak=True),
-            member: discord.PermissionOverwrite(
-                manage_channels=True, move_members=True,
-                mute_members=True, connect=True, speak=True
-            ),
+            member: discord.PermissionOverwrite(manage_channels=True, move_members=True, mute_members=True, connect=True, speak=True),
             member.guild.me: discord.PermissionOverwrite(manage_channels=True, connect=True)
         }
-
-        new_channel = await member.guild.create_voice_channel(
-            name=channel_name, category=category, overwrites=overwrites
-        )
+        new_channel = await member.guild.create_voice_channel(name=channel_name, category=category, overwrites=overwrites)
         await member.move_to(new_channel)
-
         temp_channels[str(new_channel.id)] = member.id
         guild_cfg["temp_channels"] = temp_channels
         save_guild_config(member.guild.id, guild_cfg)
-
-        # Info-Embed in den Channel schicken (als Text-Nachricht im nächsten Textkanal in der Kategorie)
         if category:
             for ch in category.text_channels:
                 try:
                     embed = discord.Embed(
                         title="🔊 Dein temporärer Channel",
                         description=(
-                            f"{member.mention}, dein Channel **{new_channel.name}** wurde erstellt!\n\n"
-                            "**Verfügbare Befehle:**\n"
-                            "`/rename` — Umbenennen\n"
-                            "`/limit` — Nutzerlimit\n"
-                            "`/lock` / `/unlock` — Sperren/Entsperren\n"
-                            "`/kick` — Nutzer rauswerfen\n"
-                            "`/ban` — Nutzer bannen\n"
-                            "`/invite` — Nutzer einladen\n"
-                            "`/transfer` — Besitz übertragen"
+                            f"{member.mention}, dein Channel wurde erstellt!\n\n"
+                            "**Voice-Befehle:**\n"
+                            "`/rename` `/limit` `/lock` `/unlock`\n"
+                            "`/kick` `/ban` `/invite` `/transfer`"
                         ),
                         color=discord.Color.blurple()
                     )
@@ -230,10 +205,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     break
                 except:
                     pass
-
         await send_log(member.guild, f"📢 **{member}** hat Temp-Channel **{new_channel.name}** erstellt.", discord.Color.blurple())
 
-    # Temp-Channel löschen wenn leer
     if before.channel and str(before.channel.id) in temp_channels:
         channel = before.channel
         if len(channel.members) == 0:
@@ -244,7 +217,17 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             save_guild_config(member.guild.id, guild_cfg)
             await send_log(member.guild, f"🗑️ Temp-Channel **{name}** wurde gelöscht.", discord.Color.orange())
 
-# ─── XP Voice Loop ────────────────────────────────────────────────────────────
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if payload.emoji.name != "🎉":
+        return
+    gid = str(payload.guild_id)
+    for gw in giveaways[gid]:
+        if gw["message_id"] == payload.message_id and payload.user_id != bot.user.id:
+            if payload.user_id not in gw.get("participants", []):
+                gw.setdefault("participants", []).append(payload.user_id)
+
+# ─── Background Loops ─────────────────────────────────────────────────────────
 
 async def voice_xp_loop():
     await bot.wait_until_ready()
@@ -256,6 +239,150 @@ async def voice_xp_loop():
                     uid = str(member.id)
                     gid = str(guild.id)
                     xp_data[gid][uid]["xp"] += XP_PER_VOICE_MINUTE
+
+async def giveaway_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(10)
+        now = datetime.datetime.utcnow().timestamp()
+        for guild in bot.guilds:
+            gid = str(guild.id)
+            for gw in list(giveaways[gid]):
+                if gw.get("ended"):
+                    continue
+                if now >= gw["end_time"]:
+                    gw["ended"] = True
+                    ch = guild.get_channel(gw["channel_id"])
+                    if not ch:
+                        continue
+                    participants = gw.get("participants", [])
+                    winner_count = gw.get("winners", 1)
+                    if not participants:
+                        try:
+                            await ch.send(f"🎁 Das Giveaway für **{gw['prize']}** ist beendet. Leider hat niemand teilgenommen.")
+                        except:
+                            pass
+                        continue
+                    winners = random.sample(participants, min(winner_count, len(participants)))
+                    winner_mentions = " ".join([f"<@{w}>" for w in winners])
+                    embed = discord.Embed(
+                        title="🎉 Giveaway beendet!",
+                        description=f"**Preis:** {gw['prize']}\n**Gewinner:** {winner_mentions}",
+                        color=discord.Color.gold()
+                    )
+                    try:
+                        await ch.send(embed=embed)
+                    except:
+                        pass
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELP COMMAND
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="hilfe", description="Zeigt alle Befehle und Funktionen des Bots.")
+async def hilfe(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🤖 TITAN Bot — Alle Befehle",
+        description="Hier findest du eine vollständige Übersicht aller verfügbaren Befehle.",
+        color=discord.Color.blurple()
+    )
+    embed.add_field(
+        name="🔊 Temporäre Voice Channels",
+        value=(
+            "`/rename [name]` — Channel umbenennen\n"
+            "`/limit [zahl]` — Nutzerlimit setzen (0 = unbegrenzt)\n"
+            "`/lock` — Channel für andere sperren\n"
+            "`/unlock` — Channel entsperren\n"
+            "`/kick [@user]` — Nutzer rauswerfen\n"
+            "`/ban [@user]` — Nutzer aus Channel bannen\n"
+            "`/invite [@user]` — Nutzer in gesperrten Channel einladen\n"
+            "`/transfer [@user]` — Channel-Besitz übertragen\n"
+            "`/cleanup` — Leere Channels aufräumen (Admin)"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🛡️ Moderation",
+        value=(
+            "`/warn [@user] [grund]` — Nutzer verwarnen\n"
+            "`/warns [@user]` — Verwarnungen anzeigen\n"
+            "`/clearwarns [@user]` — Verwarnungen löschen (Admin)\n"
+            "`/mute [@user] [min] [grund]` — Nutzer muten\n"
+            "`/unmute [@user]` — Mute aufheben\n"
+            "`/tempban [@user] [tage] [grund]` — Temporärer Ban"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="📊 Level & XP System",
+        value=(
+            "`/level [@user]` — Level & XP anzeigen\n"
+            "`/leaderboard` — Top 10 Rangliste\n"
+            "`/setlevelrole [level] [@rolle]` — Rolle für Level vergeben (Admin)\n"
+            "💡 XP bekommst du durch Nachrichten & Zeit im Voice Channel"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎵 Musik",
+        value=(
+            "`/play [suche]` — Song abspielen/zur Queue hinzufügen\n"
+            "`/skip` — Aktuellen Song überspringen\n"
+            "`/queue` — Aktuelle Warteschlange anzeigen\n"
+            "`/stop` — Musik stoppen & Channel verlassen\n"
+            "`/pause` — Musik pausieren\n"
+            "`/resume` — Musik fortsetzen"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎁 Giveaways",
+        value=(
+            "`/giveaway [preis] [minuten] [gewinner]` — Giveaway starten (Admin)\n"
+            "`/giveaway-stop [preis]` — Giveaway vorzeitig beenden (Admin)\n"
+            "💡 Mit 🎉 reagieren um teilzunehmen"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🌍 Übersetzung",
+        value=(
+            "`/übersetze [text] [sprache]` — Text übersetzen\n"
+            "💡 Sprachen: de, en, fr, es, it, pl, ru, tr, ja, zh"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎮 Fun",
+        value=(
+            "`/würfel [seiten]` — Würfel werfen\n"
+            "`/münze` — Münze werfen\n"
+            "`/poll [frage] [opt1] [opt2]` — Abstimmung erstellen\n"
+            "`/remind [min] [nachricht]` — Erinnerung setzen"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="ℹ️ Info",
+        value=(
+            "`/userinfo [@user]` — Nutzer-Infos\n"
+            "`/serverinfo` — Server-Infos\n"
+            "`/hilfe` — Diese Übersicht"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="⚙️ Admin Setup",
+        value=(
+            "`/setup [channel] [kategorie]` — TempVC einrichten\n"
+            "`/setwelcome [channel] [nachricht]` — Willkommensnachricht\n"
+            "`/setlog [channel]` — Log-Channel setzen\n"
+            "`/setautorole [@rolle]` — Auto-Rolle für neue Mitglieder"
+        ),
+        inline=False
+    )
+    embed.set_footer(text="TITAN Bot • Alle Befehle sind Slash-Commands (/)")
+    await interaction.response.send_message(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VOICE CHANNEL COMMANDS
@@ -317,9 +444,9 @@ async def ban_vc(interaction: discord.Interaction, user: discord.Member):
     await channel.set_permissions(user, connect=False, speak=False)
     if user.voice and user.voice.channel == channel:
         await user.move_to(None)
-    await interaction.response.send_message(f"🚫 **{user.display_name}** wurde aus dem Channel gebannt.", ephemeral=True)
+    await interaction.response.send_message(f"🚫 **{user.display_name}** wurde gebannt.", ephemeral=True)
 
-@bot.tree.command(name="invite", description="Lade einen Nutzer in deinen gesperrten Channel ein.")
+@bot.tree.command(name="invite", description="Lade einen Nutzer in deinen Channel ein.")
 @app_commands.describe(user="Nutzer")
 async def invite_vc(interaction: discord.Interaction, user: discord.Member):
     channel, _, err = get_temp_channel(interaction)
@@ -340,7 +467,6 @@ async def transfer(interaction: discord.Interaction, user: discord.Member):
         return await interaction.response.send_message(err, ephemeral=True)
     temp_channels = guild_cfg.get("temp_channels", {})
     temp_channels[str(channel.id)] = user.id
-    # Berechtigungen tauschen
     await channel.set_permissions(interaction.user, manage_channels=False, move_members=False, mute_members=False)
     await channel.set_permissions(user, manage_channels=True, move_members=True, mute_members=True, connect=True, speak=True)
     save_guild_config(interaction.guild.id, guild_cfg)
@@ -367,7 +493,7 @@ async def cleanup(interaction: discord.Interaction):
     await interaction.response.send_message(f"🧹 {deleted} verwaiste Channel(s) gelöscht.", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODERATION COMMANDS
+# MODERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="warn", description="Verwarnt einen Nutzer.")
@@ -378,12 +504,12 @@ async def warn(interaction: discord.Interaction, user: discord.Member, grund: st
     uid = str(user.id)
     warns_data[gid][uid].append({"reason": grund, "time": str(datetime.datetime.utcnow())})
     count = len(warns_data[gid][uid])
-    await interaction.response.send_message(f"⚠️ **{user.display_name}** verwarnt. ({count} Verwarnung(en) insgesamt)\nGrund: {grund}", ephemeral=True)
+    await interaction.response.send_message(f"⚠️ **{user.display_name}** verwarnt. ({count}x)\nGrund: {grund}", ephemeral=True)
     try:
         await user.send(f"⚠️ Du wurdest auf **{interaction.guild.name}** verwarnt.\nGrund: **{grund}**")
     except:
         pass
-    await send_log(interaction.guild, f"⚠️ **{user}** wurde von **{interaction.user}** verwarnt. Grund: {grund}", discord.Color.yellow())
+    await send_log(interaction.guild, f"⚠️ **{user}** von **{interaction.user}** verwarnt. Grund: {grund}", discord.Color.yellow())
 
 @bot.tree.command(name="warns", description="Zeigt Verwarnungen eines Nutzers.")
 @app_commands.describe(user="Nutzer")
@@ -394,7 +520,7 @@ async def warns(interaction: discord.Interaction, user: discord.Member):
     user_warns = warns_data[gid][uid]
     if not user_warns:
         return await interaction.response.send_message(f"✅ **{user.display_name}** hat keine Verwarnungen.", ephemeral=True)
-    embed = discord.Embed(title=f"⚠️ Verwarnungen von {user.display_name}", color=discord.Color.yellow())
+    embed = discord.Embed(title=f"⚠️ Verwarnungen: {user.display_name}", color=discord.Color.yellow())
     for i, w in enumerate(user_warns, 1):
         embed.add_field(name=f"#{i}", value=f"**Grund:** {w['reason']}\n**Zeit:** {w['time'][:16]}", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -403,9 +529,7 @@ async def warns(interaction: discord.Interaction, user: discord.Member):
 @app_commands.describe(user="Nutzer")
 @app_commands.checks.has_permissions(administrator=True)
 async def clearwarns(interaction: discord.Interaction, user: discord.Member):
-    gid = str(interaction.guild.id)
-    uid = str(user.id)
-    warns_data[gid][uid] = []
+    warns_data[str(interaction.guild.id)][str(user.id)] = []
     await interaction.response.send_message(f"✅ Verwarnungen von **{user.display_name}** gelöscht.", ephemeral=True)
 
 @bot.tree.command(name="mute", description="Mutet einen Nutzer für X Minuten.")
@@ -414,8 +538,8 @@ async def clearwarns(interaction: discord.Interaction, user: discord.Member):
 async def mute(interaction: discord.Interaction, user: discord.Member, minuten: int, grund: str = "Kein Grund angegeben"):
     duration = datetime.timedelta(minutes=minuten)
     await user.timeout(duration, reason=grund)
-    await interaction.response.send_message(f"🔇 **{user.display_name}** für **{minuten} Minuten** gemutet.\nGrund: {grund}", ephemeral=True)
-    await send_log(interaction.guild, f"🔇 **{user}** wurde von **{interaction.user}** für {minuten} Min. gemutet. Grund: {grund}", discord.Color.orange())
+    await interaction.response.send_message(f"🔇 **{user.display_name}** für **{minuten} Min.** gemutet.\nGrund: {grund}", ephemeral=True)
+    await send_log(interaction.guild, f"🔇 **{user}** von **{interaction.user}** für {minuten} Min. gemutet. Grund: {grund}", discord.Color.orange())
 
 @bot.tree.command(name="unmute", description="Entfernt den Mute eines Nutzers.")
 @app_commands.describe(user="Nutzer")
@@ -435,7 +559,7 @@ async def tempban(interaction: discord.Interaction, user: discord.Member, tage: 
         pass
     await user.ban(reason=f"{grund} (Tempban: {tage} Tage)")
     await interaction.followup.send(f"🚫 **{user.display_name}** für **{tage} Tag(e)** gebannt.", ephemeral=True)
-    await send_log(interaction.guild, f"🚫 **{user}** wurde von **{interaction.user}** für {tage} Tag(e) gebannt. Grund: {grund}", discord.Color.red())
+    await send_log(interaction.guild, f"🚫 **{user}** von **{interaction.user}** für {tage} Tag(e) gebannt. Grund: {grund}", discord.Color.red())
     await asyncio.sleep(tage * 86400)
     try:
         await interaction.guild.unban(user, reason="Tempban abgelaufen")
@@ -474,7 +598,7 @@ async def leaderboard(interaction: discord.Interaction):
     medals = ["🥇", "🥈", "🥉"]
     for i, (uid, d) in enumerate(sorted_users):
         member = interaction.guild.get_member(int(uid))
-        name = member.display_name if member else f"Unbekannt ({uid})"
+        name = member.display_name if member else f"Unbekannt"
         prefix = medals[i] if i < 3 else f"**#{i+1}**"
         embed.add_field(name=f"{prefix} {name}", value=f"Level {d['level']} • {d['xp']} XP", inline=False)
     await interaction.response.send_message(embed=embed)
@@ -488,15 +612,242 @@ async def setlevelrole(interaction: discord.Interaction, level_num: int, role: d
     level_roles[str(level_num)] = role.id
     cfg["level_roles"] = level_roles
     save_guild_config(interaction.guild.id, cfg)
-    await interaction.response.send_message(f"✅ Level **{level_num}** → Rolle **{role.name}** gesetzt.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Level **{level_num}** → Rolle **{role.name}**.", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FUN COMMANDS
+# MUSIK BOT
 # ══════════════════════════════════════════════════════════════════════════════
 
-import random
+def search_youtube(query: str):
+    """Sucht auf YouTube und gibt Titel + URL zurück (ohne yt-dlp)."""
+    try:
+        query_enc = urllib.parse.quote(query)
+        url = f"https://www.youtube.com/results?search_query={query_enc}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            html = r.read().decode()
+        import re
+        video_ids = re.findall(r'"videoId":"([^"]{11})"', html)
+        titles = re.findall(r'"title":{"runs":\[{"text":"([^"]+)"', html)
+        if video_ids and titles:
+            return titles[0], f"https://www.youtube.com/watch?v={video_ids[0]}"
+    except:
+        pass
+    return None, None
 
-@bot.tree.command(name="würfel", description="Würfle einen W6 (oder anderen Würfel).")
+@bot.tree.command(name="play", description="Spielt einen Song ab (YouTube-Suche).")
+@app_commands.describe(suche="Songname oder YouTube-Link")
+async def play(interaction: discord.Interaction, suche: str):
+    await interaction.response.defer()
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        return await interaction.followup.send("❌ Du musst in einem Voice Channel sein.", ephemeral=True)
+
+    try:
+        import yt_dlp
+        ydl_available = True
+    except ImportError:
+        ydl_available = False
+
+    voice_channel = interaction.user.voice.channel
+    gid = str(interaction.guild.id)
+
+    if ydl_available:
+        ydl_opts = {"format": "bestaudio/best", "quiet": True, "noplaylist": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                if "youtube.com" in suche or "youtu.be" in suche:
+                    info = ydl.extract_info(suche, download=False)
+                else:
+                    info = ydl.extract_info(f"ytsearch:{suche}", download=False)
+                    info = info["entries"][0]
+                title = info.get("title", suche)
+                audio_url = info["url"]
+            except Exception as e:
+                return await interaction.followup.send(f"❌ Song nicht gefunden: {e}", ephemeral=True)
+
+        music_queues[gid].append({"title": title, "url": audio_url})
+
+        vc = interaction.guild.voice_client
+        if not vc:
+            vc = await voice_channel.connect()
+        elif vc.channel != voice_channel:
+            await vc.move_to(voice_channel)
+
+        if not vc.is_playing():
+            await play_next(interaction.guild)
+            await interaction.followup.send(f"🎵 Spiele jetzt: **{title}**")
+        else:
+            await interaction.followup.send(f"➕ Zur Queue hinzugefügt: **{title}** (Position {len(music_queues[gid])})")
+    else:
+        title, yt_url = search_youtube(suche)
+        if title:
+            embed = discord.Embed(
+                title="🎵 Musik-Feature",
+                description=f"Gefunden: **{title}**\n{yt_url}\n\n⚠️ Für echte Musikwiedergabe muss `yt-dlp` und `ffmpeg` auf dem Server installiert werden:\n```\npip3 install yt-dlp --break-system-packages\nsudo apt install ffmpeg -y\n```",
+                color=discord.Color.orange()
+            )
+        else:
+            embed = discord.Embed(
+                title="🎵 Musik-Feature",
+                description="⚠️ Für Musikwiedergabe wird `yt-dlp` und `ffmpeg` benötigt:\n```\npip3 install yt-dlp --break-system-packages\nsudo apt install ffmpeg -y\n```\nDanach den Bot neu starten.",
+                color=discord.Color.orange()
+            )
+        await interaction.followup.send(embed=embed)
+
+async def play_next(guild: discord.Guild):
+    gid = str(guild.id)
+    if not music_queues[gid]:
+        vc = guild.voice_client
+        if vc:
+            await vc.disconnect()
+        return
+    song = music_queues[gid].pop(0)
+    vc = guild.voice_client
+    if not vc:
+        return
+    try:
+        import yt_dlp
+        FFMPEG_OPTIONS = {"before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", "options": "-vn"}
+        source = discord.FFmpegPCMAudio(song["url"], **FFMPEG_OPTIONS)
+        vc.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop))
+    except Exception as e:
+        print(f"Musik-Fehler: {e}")
+
+@bot.tree.command(name="skip", description="Überspringt den aktuellen Song.")
+async def skip(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.stop()
+        await interaction.response.send_message("⏭️ Song übersprungen.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Es wird nichts abgespielt.", ephemeral=True)
+
+@bot.tree.command(name="stop", description="Stoppt die Musik.")
+async def stop(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    music_queues[gid].clear()
+    vc = interaction.guild.voice_client
+    if vc:
+        await vc.disconnect()
+    await interaction.response.send_message("⏹️ Musik gestoppt.", ephemeral=True)
+
+@bot.tree.command(name="pause", description="Pausiert die Musik.")
+async def pause(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
+        await interaction.response.send_message("⏸️ Musik pausiert.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Nichts spielt gerade.", ephemeral=True)
+
+@bot.tree.command(name="resume", description="Setzt die Musik fort.")
+async def resume(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        await interaction.response.send_message("▶️ Musik fortgesetzt.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Musik ist nicht pausiert.", ephemeral=True)
+
+@bot.tree.command(name="queue", description="Zeigt die Musik-Warteschlange.")
+async def queue(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    q = music_queues[gid]
+    if not q:
+        return await interaction.response.send_message("📭 Die Queue ist leer.", ephemeral=True)
+    embed = discord.Embed(title="🎵 Musik-Queue", color=discord.Color.blurple())
+    for i, song in enumerate(q[:10], 1):
+        embed.add_field(name=f"#{i}", value=song["title"], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GIVEAWAY SYSTEM
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="giveaway", description="Startet ein Giveaway.")
+@app_commands.describe(preis="Was wird verlost?", minuten="Dauer in Minuten", gewinner="Anzahl Gewinner")
+@app_commands.checks.has_permissions(administrator=True)
+async def giveaway(interaction: discord.Interaction, preis: str, minuten: int, gewinner: int = 1):
+    end_time = datetime.datetime.utcnow().timestamp() + (minuten * 60)
+    end_dt = datetime.datetime.utcfromtimestamp(end_time)
+
+    embed = discord.Embed(
+        title="🎁 GIVEAWAY!",
+        description=(
+            f"**Preis:** {preis}\n\n"
+            f"Reagiere mit 🎉 um teilzunehmen!\n\n"
+            f"**Endet:** {end_dt.strftime('%d.%m.%Y um %H:%M')} UTC\n"
+            f"**Gewinner:** {gewinner}"
+        ),
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Gestartet von {interaction.user.display_name}")
+
+    await interaction.response.send_message("✅ Giveaway gestartet!", ephemeral=True)
+    msg = await interaction.channel.send(embed=embed)
+    await msg.add_reaction("🎉")
+
+    gid = str(interaction.guild.id)
+    giveaways[gid].append({
+        "message_id": msg.id,
+        "channel_id": interaction.channel.id,
+        "prize": preis,
+        "end_time": end_time,
+        "winners": gewinner,
+        "participants": [],
+        "ended": False
+    })
+
+@bot.tree.command(name="giveaway-stop", description="Beendet ein Giveaway vorzeitig.")
+@app_commands.describe(preis="Preis des Giveaways")
+@app_commands.checks.has_permissions(administrator=True)
+async def giveaway_stop(interaction: discord.Interaction, preis: str):
+    gid = str(interaction.guild.id)
+    for gw in giveaways[gid]:
+        if gw["prize"] == preis and not gw.get("ended"):
+            gw["end_time"] = 0
+            await interaction.response.send_message(f"✅ Giveaway für **{preis}** wird beendet.", ephemeral=True)
+            return
+    await interaction.response.send_message("❌ Kein aktives Giveaway mit diesem Preis gefunden.", ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ÜBERSETZUNG
+# ══════════════════════════════════════════════════════════════════════════════
+
+SPRACHEN = {
+    "de": "Deutsch", "en": "Englisch", "fr": "Französisch",
+    "es": "Spanisch", "it": "Italienisch", "pl": "Polnisch",
+    "ru": "Russisch", "tr": "Türkisch", "ja": "Japanisch", "zh": "Chinesisch"
+}
+
+@bot.tree.command(name="übersetze", description="Übersetzt einen Text in eine andere Sprache.")
+@app_commands.describe(text="Der zu übersetzende Text", sprache="Zielsprache (z.B. en, de, fr, es, it, pl, ru, tr, ja, zh)")
+async def uebersetze(interaction: discord.Interaction, text: str, sprache: str):
+    await interaction.response.defer()
+    sprache = sprache.lower()
+    if sprache not in SPRACHEN:
+        return await interaction.followup.send(
+            f"❌ Unbekannte Sprache. Verfügbar: {', '.join(SPRACHEN.keys())}", ephemeral=True
+        )
+    try:
+        params = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": sprache, "dt": "t", "q": text})
+        url = f"https://translate.googleapis.com/translate_a/single?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode())
+        translated = "".join([s[0] for s in data[0] if s[0]])
+        embed = discord.Embed(title="🌍 Übersetzung", color=discord.Color.blurple())
+        embed.add_field(name="Original", value=text[:1024], inline=False)
+        embed.add_field(name=f"Übersetzung ({SPRACHEN[sprache]})", value=translated[:1024], inline=False)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Übersetzung fehlgeschlagen: {e}", ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUN
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="würfel", description="Würfle einen Würfel.")
 @app_commands.describe(seiten="Anzahl der Seiten (Standard: 6)")
 async def wuerfel(interaction: discord.Interaction, seiten: int = 6):
     result = random.randint(1, max(2, seiten))
@@ -533,7 +884,7 @@ async def remind(interaction: discord.Interaction, minuten: int, nachricht: str)
         pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-# INFO COMMANDS
+# INFO
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="userinfo", description="Zeigt Infos über einen Nutzer.")
@@ -563,19 +914,8 @@ async def serverinfo(interaction: discord.Interaction):
     embed.add_field(name="Rollen", value=str(len(g.roles)), inline=True)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="botinfo", description="Zeigt alle Bot-Funktionen.")
-async def botinfo(interaction: discord.Interaction):
-    embed = discord.Embed(title="🤖 Bot-Befehle Übersicht", color=discord.Color.blurple())
-    embed.add_field(name="🔊 Voice Channels", value="`/rename` `/limit` `/lock` `/unlock` `/kick` `/ban` `/invite` `/transfer` `/cleanup`", inline=False)
-    embed.add_field(name="🛡️ Moderation", value="`/warn` `/warns` `/clearwarns` `/mute` `/unmute` `/tempban`", inline=False)
-    embed.add_field(name="📊 Level System", value="`/level` `/leaderboard` `/setlevelrole`", inline=False)
-    embed.add_field(name="🎮 Fun", value="`/würfel` `/münze` `/poll` `/remind`", inline=False)
-    embed.add_field(name="ℹ️ Info", value="`/userinfo` `/serverinfo` `/botinfo`", inline=False)
-    embed.add_field(name="⚙️ Admin Setup", value="`/setup` `/setwelcome` `/setlog` `/setautorole`", inline=False)
-    await interaction.response.send_message(embed=embed)
-
 # ══════════════════════════════════════════════════════════════════════════════
-# ADMIN SETUP COMMANDS
+# ADMIN SETUP
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="setup", description="Richtet das TempVC-System ein.")
@@ -592,7 +932,7 @@ async def setup(interaction: discord.Interaction, channel: discord.VoiceChannel,
     embed.add_field(name="Kategorie", value=category.name, inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="setwelcome", description="Setzt den Willkommens-Channel und die Nachricht.")
+@bot.tree.command(name="setwelcome", description="Setzt den Willkommens-Channel.")
 @app_commands.describe(channel="Willkommens-Channel", nachricht="Nachricht ({user} = Erwähnung)")
 @app_commands.checks.has_permissions(administrator=True)
 async def setwelcome(interaction: discord.Interaction, channel: discord.TextChannel, nachricht: str = "Willkommen auf dem Server, {user}! 🎉"):
@@ -600,7 +940,7 @@ async def setwelcome(interaction: discord.Interaction, channel: discord.TextChan
     cfg["welcome_channel_id"] = channel.id
     cfg["welcome_message"] = nachricht
     save_guild_config(interaction.guild.id, cfg)
-    await interaction.response.send_message(f"✅ Willkommens-Channel: {channel.mention}\nNachricht: {nachricht}", ephemeral=True)
+    await interaction.response.send_message(f"✅ Willkommens-Channel: {channel.mention}", ephemeral=True)
 
 @bot.tree.command(name="setlog", description="Setzt den Log-Channel.")
 @app_commands.describe(channel="Log-Channel")
