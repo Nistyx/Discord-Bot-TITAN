@@ -92,6 +92,7 @@ async def on_ready():
         print(f"❌ Sync-Fehler: {e}")
     bot.loop.create_task(voice_xp_loop())
     bot.loop.create_task(giveaway_loop())
+    bot.loop.create_task(star_citizen_loop())
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -239,6 +240,36 @@ async def voice_xp_loop():
                     uid = str(member.id)
                     gid = str(guild.id)
                     xp_data[gid][uid]["xp"] += XP_PER_VOICE_MINUTE
+
+async def star_citizen_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(300)  # alle 5 Minuten aktualisieren
+        for guild in bot.guilds:
+            cfg = get_guild_config(guild.id)
+            sc_channel_id = cfg.get("sc_channel_id")
+            if not sc_channel_id:
+                continue
+            channel = guild.get_channel(sc_channel_id)
+            if not channel:
+                continue
+            count = 0
+            for member in guild.members:
+                if member.bot:
+                    continue
+                for activity in member.activities:
+                    if isinstance(activity, discord.Game) and "star citizen" in activity.name.lower():
+                        count += 1
+                        break
+                    if isinstance(activity, discord.Activity) and "star citizen" in activity.name.lower():
+                        count += 1
+                        break
+            try:
+                new_name = f"🚀 Star Citizen: {count} Spieler"
+                if channel.name != new_name:
+                    await channel.edit(name=new_name)
+            except:
+                pass
 
 async def giveaway_loop():
     await bot.wait_until_ready()
@@ -959,6 +990,15 @@ async def setautorole(interaction: discord.Interaction, role: discord.Role):
     cfg["auto_role_id"] = role.id
     save_guild_config(interaction.guild.id, cfg)
     await interaction.response.send_message(f"✅ Auto-Rolle: **{role.name}**", ephemeral=True)
+
+@bot.tree.command(name="setschannel", description="Setzt den Star Citizen Spieler-Channel.")
+@app_commands.describe(channel="Der Voice- oder Text-Channel der aktualisiert werden soll")
+@app_commands.checks.has_permissions(administrator=True)
+async def setschannel(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    cfg = get_guild_config(interaction.guild.id)
+    cfg["sc_channel_id"] = channel.id
+    save_guild_config(interaction.guild.id, cfg)
+    await interaction.response.send_message(f"✅ Star Citizen Channel gesetzt: {channel.mention}\nWird alle 5 Minuten aktualisiert.", ephemeral=True)
 
 # ─── Error Handler ────────────────────────────────────────────────────────────
 
