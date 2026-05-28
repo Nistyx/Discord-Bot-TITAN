@@ -9,6 +9,7 @@ import random
 import urllib.request
 import urllib.parse
 from collections import defaultdict
+from aiohttp import web
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ async def on_ready():
     bot.loop.create_task(voice_xp_loop())
     bot.loop.create_task(giveaway_loop())
     bot.loop.create_task(star_citizen_loop())
+    bot.loop.create_task(start_api())
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -1019,3 +1021,100 @@ if not TOKEN:
     raise ValueError("❌ DISCORD_TOKEN nicht gesetzt!")
 
 bot.run(TOKEN)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REST API
+# ══════════════════════════════════════════════════════════════════════════════
+
+API_KEY = os.getenv("API_KEY", "geheimer-api-key")
+
+def check_auth(request):
+    key = request.headers.get("X-API-Key") or request.rel_url.query.get("key")
+    return key == API_KEY
+
+async def api_members(request):
+    if not check_auth(request):
+        return web.Response(status=401, text=json.dumps({"error": "Unauthorized"}), content_type="application/json")
+    
+    result = []
+    for guild in bot.guilds:
+        for member in guild.members:
+            if member.bot:
+                continue
+            result.append({
+                "id": str(member.id),
+                "name": member.name,
+                "display_name": member.display_name,
+                "discriminator": member.discriminator,
+                "avatar": str(member.display_avatar.url),
+                "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+                "roles": [{"id": str(r.id), "name": r.name} for r in member.roles if r.name != "@everyone"],
+                "guild": {"id": str(guild.id), "name": guild.name},
+                "online": str(member.status) if member.status else "offline",
+                "playing": next((a.name for a in member.activities if isinstance(a, (discord.Game, discord.Activity))), None)
+            })
+    
+    return web.Response(
+        text=json.dumps(result, ensure_ascii=False, indent=2),
+        content_type="application/json"
+    )
+
+async def api_member(request):
+    if not check_auth(request):
+        return web.Response(status=401, text=json.dumps({"error": "Unauthorized"}), content_type="application/json")
+    
+    user_id = request.match_info.get("user_id")
+    for guild in bot.guilds:
+        member = guild.get_member(int(user_id))
+        if member:
+            data = {
+                "id": str(member.id),
+                "name": member.name,
+                "display_name": member.display_name,
+                "avatar": str(member.display_avatar.url),
+                "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+                "roles": [{"id": str(r.id), "name": r.name} for r in member.roles if r.name != "@everyone"],
+                "guild": {"id": str(guild.id), "name": guild.name},
+                "online": str(member.status),
+                "playing": next((a.name for a in member.activities if isinstance(a, (discord.Game, discord.Activity))), None)
+            }
+            return web.Response(text=json.dumps(data, ensure_ascii=False, indent=2), content_type="application/json")
+    
+    return web.Response(status=404, text=json.dumps({"error": "Member not found"}), content_type="application/json")
+
+async def api_roles(request):
+    if not check_auth(request):
+        return web.Response(status=401, text=json.dumps({"error": "Unauthorized"}), content_type="application/json")
+    
+    result = []
+    for guild in bot.guilds:
+        for role in guild.roles:
+            if role.name == "@everyone":
+                continue
+            result.append({
+                "id": str(role.id),
+                "name": role.name,
+                "color": str(role.color),
+                "members": [str(m.id) for m in role.members],
+                "guild": {"id": str(guild.id), "name": guild.name}
+            })
+    
+    return web.Response(text=json.dumps(result, ensure_ascii=False, indent=2), content_type="application/json")
+
+async def api_status(request):
+    guilds = [{"id": str(g.id), "name": g.name, "members": g.member_count} for g in bot.guilds]
+    data = {"status": "online", "bot": str(bot.user), "guilds": guilds}
+    return web.Response(text=json.dumps(data, ensure_ascii=False, indent=2), content_type="application/json")
+
+async def start_api():
+    await bot.wait_until_ready()
+    app = web.Application()
+    app.router.add_get("/", api_status)
+    app.router.add_get("/members", api_members)
+    app.router.add_get("/members/{user_id}", api_member)
+    app.router.add_get("/roles", api_roles)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+    print("🌐 REST API läuft auf Port 8080")
