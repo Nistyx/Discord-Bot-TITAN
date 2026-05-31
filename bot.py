@@ -72,13 +72,13 @@ def get_temp_channel(interaction: discord.Interaction):
     guild_cfg = get_guild_config(interaction.guild.id)
     temp_channels = guild_cfg.get("temp_channels", {})
     if not interaction.user.voice or not interaction.user.voice.channel:
-        return None, None, "❌ Du bist in keinem Voice Channel."
+        return None, None, "❌ You are not in a voice channel."
     channel = interaction.user.voice.channel
     if str(channel.id) not in temp_channels:
-        return None, None, "❌ Du bist nicht in einem temporären Channel."
+        return None, None, "❌ You are not in a temporary channel."
     owner_id = temp_channels[str(channel.id)]
     if owner_id != interaction.user.id:
-        return None, None, "❌ Du bist nicht der Besitzer dieses Channels."
+        return None, None, "❌ You are not the owner of this channel."
     return channel, guild_cfg, None
 
 # ─── Events ───────────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ async def on_member_join(member: discord.Member):
         ch = member.guild.get_channel(welcome_channel_id)
         if ch:
             embed = discord.Embed(
-                title="👋 Willkommen!",
+                title="👋 Welcome!",
                 description=welcome_msg.replace("{user}", member.mention),
                 color=discord.Color.green()
             )
@@ -148,7 +148,7 @@ async def on_message(message: discord.Message):
         user_xp["level"] += 1
         lvl = user_xp["level"]
         try:
-            await message.channel.send(f"🎉 {message.author.mention} hat **Level {lvl}** erreicht!", delete_after=10)
+            await message.channel.send(f"🎉 {message.author.mention} reached **Level {lvl}**!", delete_after=10)
         except:
             pass
         cfg = get_guild_config(message.guild.id)
@@ -199,10 +199,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             for ch in category.text_channels:
                 try:
                     embed = discord.Embed(
-                        title="🔊 Dein temporärer Channel",
+                        title="🔊 Your temporary channel",
                         description=(
-                            f"{member.mention}, dein Channel wurde erstellt!\n\n"
-                            "**Voice-Befehle:**\n"
+                            f"{member.mention}, your channel has been created!\n\n"
+                            "**Voice commands:**\n"
                             "`/rename` `/limit` `/lock` `/unlock`\n"
                             "`/kick` `/ban` `/invite` `/transfer`"
                         ),
@@ -316,15 +316,15 @@ async def giveaway_loop():
 # HELP COMMAND
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="hilfe", description="Zeigt alle Befehle und Funktionen des Bots.")
+@bot.tree.command(name="help", description="Shows all commands and features of the bot.")
 async def hilfe(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="🤖 TITAN Bot — Alle Befehle",
-        description="Hier findest du eine vollständige Übersicht aller verfügbaren Befehle.",
+        title="🤖 TITAN Bot — All Commands",
+        description="Here is a complete overview of all available commands.",
         color=discord.Color.blurple()
     )
     embed.add_field(
-        name="🔊 Temporäre Voice Channels",
+        name="🔊 Temporary Voice Channels",
         value=(
             "`/rename [name]` — Channel umbenennen\n"
             "`/limit [zahl]` — Nutzerlimit setzen (0 = unbegrenzt)\n"
@@ -361,7 +361,7 @@ async def hilfe(interaction: discord.Interaction):
         inline=False
     )
     embed.add_field(
-        name="🎵 Musik",
+        name="🎵 Music",
         value=(
             "`/play [suche]` — Song abspielen/zur Queue hinzufügen\n"
             "`/skip` — Aktuellen Song überspringen\n"
@@ -382,7 +382,7 @@ async def hilfe(interaction: discord.Interaction):
         inline=False
     )
     embed.add_field(
-        name="🌍 Übersetzung",
+        name="🌍 Translation",
         value=(
             "`/übersetze [text] [sprache]` — Text übersetzen\n"
             "💡 Sprachen: de, en, fr, es, it, pl, ru, tr, ja, zh"
@@ -418,62 +418,62 @@ async def hilfe(interaction: discord.Interaction):
         ),
         inline=False
     )
-    embed.set_footer(text="TITAN Bot • Alle Befehle sind Slash-Commands (/)")
+    embed.set_footer(text="TITAN Bot • All commands are slash commands (/)")
     await interaction.response.send_message(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VOICE CHANNEL COMMANDS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="rename", description="Benenne deinen Channel um.")
-@app_commands.describe(name="Neuer Name")
+@bot.tree.command(name="rename", description="Rename your voice channel.")
+@app_commands.describe(name="New name")
 async def rename(interaction: discord.Interaction, name: str):
     channel, _, err = get_temp_channel(interaction)
     if err:
         return await interaction.response.send_message(err, ephemeral=True)
     await channel.edit(name=name)
-    await interaction.response.send_message(f"✅ Channel umbenannt zu **{name}**.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Channel renamed to **{name}**.", ephemeral=True)
 
-@bot.tree.command(name="limit", description="Setze ein Nutzerlimit (0 = unbegrenzt).")
-@app_commands.describe(anzahl="Maximale Nutzerzahl")
-async def limit(interaction: discord.Interaction, anzahl: int):
+@bot.tree.command(name="limit", description="Set a user limit (0 = unlimited).")
+@app_commands.describe(anzahl="Maximum user count")
+async def limit(interaction: discord.Interaction, amount: int):
     channel, _, err = get_temp_channel(interaction)
     if err:
         return await interaction.response.send_message(err, ephemeral=True)
     await channel.edit(user_limit=max(0, min(anzahl, 99)))
-    msg = f"✅ Limit gesetzt: **{anzahl}**." if anzahl > 0 else "✅ Limit entfernt."
+    msg = f"✅ Limit set to **{anzahl}**." if anzahl > 0 else "✅ Limit removed."
     await interaction.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="lock", description="Sperre deinen Channel.")
+@bot.tree.command(name="lock", description="Lock your channel.")
 async def lock(interaction: discord.Interaction):
     channel, _, err = get_temp_channel(interaction)
     if err:
         return await interaction.response.send_message(err, ephemeral=True)
     await channel.set_permissions(interaction.guild.default_role, connect=False)
-    await interaction.response.send_message("🔒 Channel gesperrt.", ephemeral=True)
+    await interaction.response.send_message("🔒 Channel locked.", ephemeral=True)
 
-@bot.tree.command(name="unlock", description="Entsperre deinen Channel.")
+@bot.tree.command(name="unlock", description="Unlock your channel.")
 async def unlock(interaction: discord.Interaction):
     channel, _, err = get_temp_channel(interaction)
     if err:
         return await interaction.response.send_message(err, ephemeral=True)
     await channel.set_permissions(interaction.guild.default_role, connect=True)
-    await interaction.response.send_message("🔓 Channel entsperrt.", ephemeral=True)
+    await interaction.response.send_message("🔓 Channel unlocked.", ephemeral=True)
 
-@bot.tree.command(name="kick", description="Werfe einen Nutzer aus deinem Channel.")
-@app_commands.describe(user="Nutzer")
+@bot.tree.command(name="kick", description="Kick a user from your channel.")
+@app_commands.describe(user="User")
 async def kick_vc(interaction: discord.Interaction, user: discord.Member):
     channel, _, err = get_temp_channel(interaction)
     if err:
         return await interaction.response.send_message(err, ephemeral=True)
     if user.voice and user.voice.channel == channel:
         await user.move_to(None)
-        await interaction.response.send_message(f"👢 **{user.display_name}** wurde rausgeworfen.", ephemeral=True)
+        await interaction.response.send_message(f"👢 **{user.display_name}** was kicked.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"❌ **{user.display_name}** ist nicht in deinem Channel.", ephemeral=True)
+        await interaction.response.send_message(f"❌ **{user.display_name}** is not in your channel.", ephemeral=True)
 
-@bot.tree.command(name="ban", description="Banne einen Nutzer aus deinem Channel.")
-@app_commands.describe(user="Nutzer")
+@bot.tree.command(name="ban", description="Ban a user from your channel.")
+@app_commands.describe(user="User")
 async def ban_vc(interaction: discord.Interaction, user: discord.Member):
     channel, _, err = get_temp_channel(interaction)
     if err:
@@ -481,23 +481,23 @@ async def ban_vc(interaction: discord.Interaction, user: discord.Member):
     await channel.set_permissions(user, connect=False, speak=False)
     if user.voice and user.voice.channel == channel:
         await user.move_to(None)
-    await interaction.response.send_message(f"🚫 **{user.display_name}** wurde gebannt.", ephemeral=True)
+    await interaction.response.send_message(f"🚫 **{user.display_name}** was banned.", ephemeral=True)
 
-@bot.tree.command(name="invite", description="Lade einen Nutzer in deinen Channel ein.")
-@app_commands.describe(user="Nutzer")
+@bot.tree.command(name="invite", description="Invite a user to your channel.")
+@app_commands.describe(user="User")
 async def invite_vc(interaction: discord.Interaction, user: discord.Member):
     channel, _, err = get_temp_channel(interaction)
     if err:
         return await interaction.response.send_message(err, ephemeral=True)
     await channel.set_permissions(user, connect=True)
-    await interaction.response.send_message(f"✅ **{user.display_name}** wurde eingeladen.", ephemeral=True)
+    await interaction.response.send_message(f"✅ **{user.display_name}** was invited.", ephemeral=True)
     try:
         await user.send(f"📨 **{interaction.user.display_name}** hat dich in **{channel.name}** auf **{interaction.guild.name}** eingeladen!")
     except:
         pass
 
-@bot.tree.command(name="transfer", description="Übertrage den Channel-Besitz.")
-@app_commands.describe(user="Neuer Besitzer")
+@bot.tree.command(name="transfer", description="Transfer channel ownership.")
+@app_commands.describe(user="New owner")
 async def transfer(interaction: discord.Interaction, user: discord.Member):
     channel, guild_cfg, err = get_temp_channel(interaction)
     if err:
@@ -507,9 +507,9 @@ async def transfer(interaction: discord.Interaction, user: discord.Member):
     await channel.set_permissions(interaction.user, manage_channels=False, move_members=False, mute_members=False)
     await channel.set_permissions(user, manage_channels=True, move_members=True, mute_members=True, connect=True, speak=True)
     save_guild_config(interaction.guild.id, guild_cfg)
-    await interaction.response.send_message(f"✅ Besitz an **{user.display_name}** übertragen.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Ownership transferred to **{user.display_name}**.", ephemeral=True)
 
-@bot.tree.command(name="cleanup", description="Löscht alle leeren Temp-Channels (Admin).")
+@bot.tree.command(name="cleanup", description="Delete all empty temp channels (Admin).")
 @app_commands.checks.has_permissions(administrator=True)
 async def cleanup(interaction: discord.Interaction):
     guild_cfg = get_guild_config(interaction.guild.id)
@@ -527,76 +527,76 @@ async def cleanup(interaction: discord.Interaction):
         del temp_channels[ch_id]
     guild_cfg["temp_channels"] = temp_channels
     save_guild_config(interaction.guild.id, guild_cfg)
-    await interaction.response.send_message(f"🧹 {deleted} verwaiste Channel(s) gelöscht.", ephemeral=True)
+    await interaction.response.send_message(f"🧹 {deleted} empty channel(s) deleted.", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MODERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="warn", description="Verwarnt einen Nutzer.")
-@app_commands.describe(user="Nutzer", grund="Grund")
+@bot.tree.command(name="warn", description="Warn a user.")
+@app_commands.describe(user="User", grund="Reason")
 @app_commands.checks.has_permissions(moderate_members=True)
-async def warn(interaction: discord.Interaction, user: discord.Member, grund: str):
+async def warn(interaction: discord.Interaction, user: discord.Member, reason: str):
     gid = str(interaction.guild.id)
     uid = str(user.id)
-    warns_data[gid][uid].append({"reason": grund, "time": str(datetime.datetime.utcnow())})
+    warns_data[gid][uid].append({"reason": reason, "time": str(datetime.datetime.utcnow())})
     count = len(warns_data[gid][uid])
-    await interaction.response.send_message(f"⚠️ **{user.display_name}** verwarnt. ({count}x)\nGrund: {grund}", ephemeral=True)
+    await interaction.response.send_message(f"⚠️ **{user.display_name}** warned. ({count}x)\nReason: {reason}", ephemeral=True)
     try:
-        await user.send(f"⚠️ Du wurdest auf **{interaction.guild.name}** verwarnt.\nGrund: **{grund}**")
+        await user.send(f"⚠️ You were warned on **{interaction.guild.name}**.\nReason: **{reason}**")
     except:
         pass
-    await send_log(interaction.guild, f"⚠️ **{user}** von **{interaction.user}** verwarnt. Grund: {grund}", discord.Color.yellow())
+    await send_log(interaction.guild, f"⚠️ **{user}** von **{interaction.user}** verwarnt. Reason: {reason}", discord.Color.yellow())
 
-@bot.tree.command(name="warns", description="Zeigt Verwarnungen eines Nutzers.")
-@app_commands.describe(user="Nutzer")
+@bot.tree.command(name="warns", description="Show warnings of a user.")
+@app_commands.describe(user="User")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def warns(interaction: discord.Interaction, user: discord.Member):
     gid = str(interaction.guild.id)
     uid = str(user.id)
     user_warns = warns_data[gid][uid]
     if not user_warns:
-        return await interaction.response.send_message(f"✅ **{user.display_name}** hat keine Verwarnungen.", ephemeral=True)
-    embed = discord.Embed(title=f"⚠️ Verwarnungen: {user.display_name}", color=discord.Color.yellow())
+        return await interaction.response.send_message(f"✅ **{user.display_name}** has no warnings.", ephemeral=True)
+    embed = discord.Embed(title=f"⚠️ Warnings: {user.display_name}", color=discord.Color.yellow())
     for i, w in enumerate(user_warns, 1):
         embed.add_field(name=f"#{i}", value=f"**Grund:** {w['reason']}\n**Zeit:** {w['time'][:16]}", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="clearwarns", description="Löscht alle Verwarnungen eines Nutzers.")
-@app_commands.describe(user="Nutzer")
+@bot.tree.command(name="clearwarns", description="Clear all warnings of a user.")
+@app_commands.describe(user="User")
 @app_commands.checks.has_permissions(administrator=True)
 async def clearwarns(interaction: discord.Interaction, user: discord.Member):
     warns_data[str(interaction.guild.id)][str(user.id)] = []
-    await interaction.response.send_message(f"✅ Verwarnungen von **{user.display_name}** gelöscht.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Warnings of **{user.display_name}** cleared.", ephemeral=True)
 
-@bot.tree.command(name="mute", description="Mutet einen Nutzer für X Minuten.")
-@app_commands.describe(user="Nutzer", minuten="Dauer in Minuten", grund="Grund")
+@bot.tree.command(name="mute", description="Mute a user for X minutes.")
+@app_commands.describe(user="User", minuten="Duration in minutes", grund="Reason")
 @app_commands.checks.has_permissions(moderate_members=True)
-async def mute(interaction: discord.Interaction, user: discord.Member, minuten: int, grund: str = "Kein Grund angegeben"):
+async def mute(interaction: discord.Interaction, user: discord.Member, minutes: int, reason: str = "No reason provided"):
     duration = datetime.timedelta(minutes=minuten)
     await user.timeout(duration, reason=grund)
-    await interaction.response.send_message(f"🔇 **{user.display_name}** für **{minuten} Min.** gemutet.\nGrund: {grund}", ephemeral=True)
-    await send_log(interaction.guild, f"🔇 **{user}** von **{interaction.user}** für {minuten} Min. gemutet. Grund: {grund}", discord.Color.orange())
+    await interaction.response.send_message(f"🔇 **{user.display_name}** muted for **{minuten} minutes**.\nReason: {grund}", ephemeral=True)
+    await send_log(interaction.guild, f"🔇 **{user}** von **{interaction.user}** für {minuten} Min. gemutet. Reason: {reason}", discord.Color.orange())
 
-@bot.tree.command(name="unmute", description="Entfernt den Mute eines Nutzers.")
-@app_commands.describe(user="Nutzer")
+@bot.tree.command(name="unmute", description="Unmute a user.")
+@app_commands.describe(user="User")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def unmute(interaction: discord.Interaction, user: discord.Member):
     await user.timeout(None)
-    await interaction.response.send_message(f"🔊 **{user.display_name}** wurde entmutet.", ephemeral=True)
+    await interaction.response.send_message(f"🔊 **{user.display_name}** was unmuted.", ephemeral=True)
 
-@bot.tree.command(name="tempban", description="Bannt einen Nutzer für X Tage.")
-@app_commands.describe(user="Nutzer", tage="Dauer in Tagen", grund="Grund")
+@bot.tree.command(name="tempban", description="Ban a user for X days.")
+@app_commands.describe(user="User", tage="Duration in days", grund="Reason")
 @app_commands.checks.has_permissions(ban_members=True)
-async def tempban(interaction: discord.Interaction, user: discord.Member, tage: int, grund: str = "Kein Grund angegeben"):
+async def tempban(interaction: discord.Interaction, user: discord.Member, days: int, reason: str = "No reason provided"):
     await interaction.response.defer(ephemeral=True)
     try:
         await user.send(f"🚫 Du wurdest von **{interaction.guild.name}** für **{tage} Tag(e)** gebannt.\nGrund: **{grund}**")
     except:
         pass
     await user.ban(reason=f"{grund} (Tempban: {tage} Tage)")
-    await interaction.followup.send(f"🚫 **{user.display_name}** für **{tage} Tag(e)** gebannt.", ephemeral=True)
-    await send_log(interaction.guild, f"🚫 **{user}** von **{interaction.user}** für {tage} Tag(e) gebannt. Grund: {grund}", discord.Color.red())
+    await interaction.followup.send(f"🚫 **{user.display_name}** banned for **{tage} day(s)**.", ephemeral=True)
+    await send_log(interaction.guild, f"🚫 **{user}** von **{interaction.user}** für {tage} Tag(e) gebannt. Reason: {reason}", discord.Color.red())
     await asyncio.sleep(tage * 86400)
     try:
         await interaction.guild.unban(user, reason="Tempban abgelaufen")
@@ -607,8 +607,8 @@ async def tempban(interaction: discord.Interaction, user: discord.Member, tage: 
 # LEVEL SYSTEM
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="level", description="Zeigt dein Level und XP.")
-@app_commands.describe(user="Nutzer (optional)")
+@bot.tree.command(name="level", description="Show your level and XP.")
+@app_commands.describe(user="User (optional)")
 async def level(interaction: discord.Interaction, user: discord.Member = None):
     user = user or interaction.user
     gid = str(interaction.guild.id)
@@ -622,16 +622,16 @@ async def level(interaction: discord.Interaction, user: discord.Member = None):
     embed = discord.Embed(title=f"📊 {user.display_name}", color=discord.Color.blurple())
     embed.add_field(name="Level", value=str(lvl), inline=True)
     embed.add_field(name="XP", value=f"{xp}/{needed}", inline=True)
-    embed.add_field(name="Fortschritt", value=f"`{bar}`", inline=False)
+    embed.add_field(name="Progress", value=f"`{bar}`", inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="leaderboard", description="Zeigt die Top 10 XP-Rangliste.")
+@bot.tree.command(name="leaderboard", description="Show the top 10 XP leaderboard.")
 async def leaderboard(interaction: discord.Interaction):
     gid = str(interaction.guild.id)
     data = xp_data[gid]
     sorted_users = sorted(data.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)[:10]
-    embed = discord.Embed(title="🏆 XP Rangliste", color=discord.Color.gold())
+    embed = discord.Embed(title="🏆 XP Leaderboard", color=discord.Color.gold())
     medals = ["🥇", "🥈", "🥉"]
     for i, (uid, d) in enumerate(sorted_users):
         member = interaction.guild.get_member(int(uid))
@@ -640,7 +640,7 @@ async def leaderboard(interaction: discord.Interaction):
         embed.add_field(name=f"{prefix} {name}", value=f"Level {d['level']} • {d['xp']} XP", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="setlevelrole", description="Weise einer Level eine Rolle zu (Admin).")
+@bot.tree.command(name="setlevelrole", description="Assign a role to a level (Admin).")
 @app_commands.describe(level_num="Level", role="Rolle")
 @app_commands.checks.has_permissions(administrator=True)
 async def setlevelrole(interaction: discord.Interaction, level_num: int, role: discord.Role):
@@ -672,12 +672,12 @@ def search_youtube(query: str):
         pass
     return None, None
 
-@bot.tree.command(name="play", description="Spielt einen Song ab (YouTube-Suche).")
-@app_commands.describe(suche="Songname oder YouTube-Link")
-async def play(interaction: discord.Interaction, suche: str):
+@bot.tree.command(name="play", description="Play a song (YouTube search).")
+@app_commands.describe(suche="Song name or YouTube link")
+async def play(interaction: discord.Interaction, search: str):
     await interaction.response.defer()
     if not interaction.user.voice or not interaction.user.voice.channel:
-        return await interaction.followup.send("❌ Du musst in einem Voice Channel sein.", ephemeral=True)
+        return await interaction.followup.send("❌ You must be in a voice channel.", ephemeral=True)
 
     try:
         import yt_dlp
@@ -712,9 +712,9 @@ async def play(interaction: discord.Interaction, suche: str):
 
         if not vc.is_playing():
             await play_next(interaction.guild)
-            await interaction.followup.send(f"🎵 Spiele jetzt: **{title}**")
+            await interaction.followup.send(f"🎵 Now playing: **{title}**")
         else:
-            await interaction.followup.send(f"➕ Zur Queue hinzugefügt: **{title}** (Position {len(music_queues[gid])})")
+            await interaction.followup.send(f"➕ Added to queue: **{title}** (Position {len(music_queues[gid])})")
     else:
         title, yt_url = search_youtube(suche)
         if title:
@@ -750,49 +750,49 @@ async def play_next(guild: discord.Guild):
     except Exception as e:
         print(f"Musik-Fehler: {e}")
 
-@bot.tree.command(name="skip", description="Überspringt den aktuellen Song.")
+@bot.tree.command(name="skip", description="Skip the current song.")
 async def skip(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.stop()
-        await interaction.response.send_message("⏭️ Song übersprungen.", ephemeral=True)
+        await interaction.response.send_message("⏭️ Song skipped.", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Es wird nichts abgespielt.", ephemeral=True)
+        await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
 
-@bot.tree.command(name="stop", description="Stoppt die Musik.")
+@bot.tree.command(name="stop", description="Stop the music.")
 async def stop(interaction: discord.Interaction):
     gid = str(interaction.guild.id)
     music_queues[gid].clear()
     vc = interaction.guild.voice_client
     if vc:
         await vc.disconnect()
-    await interaction.response.send_message("⏹️ Musik gestoppt.", ephemeral=True)
+    await interaction.response.send_message("⏹️ Music stopped.", ephemeral=True)
 
-@bot.tree.command(name="pause", description="Pausiert die Musik.")
+@bot.tree.command(name="pause", description="Pause the music.")
 async def pause(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        await interaction.response.send_message("⏸️ Musik pausiert.", ephemeral=True)
+        await interaction.response.send_message("⏸️ Music paused.", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Nichts spielt gerade.", ephemeral=True)
+        await interaction.response.send_message("❌ Nothing is playing right now.", ephemeral=True)
 
-@bot.tree.command(name="resume", description="Setzt die Musik fort.")
+@bot.tree.command(name="resume", description="Resume the music.")
 async def resume(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        await interaction.response.send_message("▶️ Musik fortgesetzt.", ephemeral=True)
+        await interaction.response.send_message("▶️ Music resumed.", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Musik ist nicht pausiert.", ephemeral=True)
+        await interaction.response.send_message("❌ Music is not paused.", ephemeral=True)
 
-@bot.tree.command(name="queue", description="Zeigt die Musik-Warteschlange.")
+@bot.tree.command(name="queue", description="Show the music queue.")
 async def queue(interaction: discord.Interaction):
     gid = str(interaction.guild.id)
     q = music_queues[gid]
     if not q:
-        return await interaction.response.send_message("📭 Die Queue ist leer.", ephemeral=True)
-    embed = discord.Embed(title="🎵 Musik-Queue", color=discord.Color.blurple())
+        return await interaction.response.send_message("📭 The queue is empty.", ephemeral=True)
+    embed = discord.Embed(title="🎵 Music Queue", color=discord.Color.blurple())
     for i, song in enumerate(q[:10], 1):
         embed.add_field(name=f"#{i}", value=song["title"], inline=False)
     await interaction.response.send_message(embed=embed)
@@ -801,10 +801,10 @@ async def queue(interaction: discord.Interaction):
 # GIVEAWAY SYSTEM
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="giveaway", description="Startet ein Giveaway.")
-@app_commands.describe(preis="Was wird verlost?", minuten="Dauer in Minuten", gewinner="Anzahl Gewinner")
+@bot.tree.command(name="giveaway", description="Start a giveaway.")
+@app_commands.describe(preis="What is being given away?", minuten="Duration in minutes", gewinner="Number of winners")
 @app_commands.checks.has_permissions(administrator=True)
-async def giveaway(interaction: discord.Interaction, preis: str, minuten: int, gewinner: int = 1):
+async def giveaway(interaction: discord.Interaction, prize: str, minutes: int, gewinner: int = 1):
     end_time = datetime.datetime.utcnow().timestamp() + (minuten * 60)
     end_dt = datetime.datetime.utcfromtimestamp(end_time)
 
@@ -818,9 +818,9 @@ async def giveaway(interaction: discord.Interaction, preis: str, minuten: int, g
         ),
         color=discord.Color.gold()
     )
-    embed.set_footer(text=f"Gestartet von {interaction.user.display_name}")
+    embed.set_footer(text=f"Started by {interaction.user.display_name}")
 
-    await interaction.response.send_message("✅ Giveaway gestartet!", ephemeral=True)
+    await interaction.response.send_message("✅ Giveaway started!", ephemeral=True)
     msg = await interaction.channel.send(embed=embed)
     await msg.add_reaction("🎉")
 
@@ -835,17 +835,17 @@ async def giveaway(interaction: discord.Interaction, preis: str, minuten: int, g
         "ended": False
     })
 
-@bot.tree.command(name="giveaway-stop", description="Beendet ein Giveaway vorzeitig.")
-@app_commands.describe(preis="Preis des Giveaways")
+@bot.tree.command(name="giveaway-end", description="End a giveaway early.")
+@app_commands.describe(preis="Giveaway prize")
 @app_commands.checks.has_permissions(administrator=True)
-async def giveaway_stop(interaction: discord.Interaction, preis: str):
+async def giveaway_stop(interaction: discord.Interaction, prize: str):
     gid = str(interaction.guild.id)
     for gw in giveaways[gid]:
         if gw["prize"] == preis and not gw.get("ended"):
             gw["end_time"] = 0
-            await interaction.response.send_message(f"✅ Giveaway für **{preis}** wird beendet.", ephemeral=True)
+            await interaction.response.send_message(f"✅ Giveaway for **{preis}** is being ended.", ephemeral=True)
             return
-    await interaction.response.send_message("❌ Kein aktives Giveaway mit diesem Preis gefunden.", ephemeral=True)
+    await interaction.response.send_message("❌ No active giveaway found with this prize.", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ÜBERSETZUNG
@@ -857,9 +857,9 @@ SPRACHEN = {
     "ru": "Russisch", "tr": "Türkisch", "ja": "Japanisch", "zh": "Chinesisch"
 }
 
-@bot.tree.command(name="übersetze", description="Übersetzt einen Text in eine andere Sprache.")
-@app_commands.describe(text="Der zu übersetzende Text", sprache="Zielsprache (z.B. en, de, fr, es, it, pl, ru, tr, ja, zh)")
-async def uebersetze(interaction: discord.Interaction, text: str, sprache: str):
+@bot.tree.command(name="translate", description="Translate text into another language.")
+@app_commands.describe(text="The text to translate", sprache="Target language (e.g. en, de, fr, es, it, pl, ru, tr, ja, zh)")
+async def uebersetze(interaction: discord.Interaction, text: str, language: str):
     await interaction.response.defer()
     sprache = sprache.lower()
     if sprache not in SPRACHEN:
@@ -873,9 +873,9 @@ async def uebersetze(interaction: discord.Interaction, text: str, sprache: str):
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read().decode())
         translated = "".join([s[0] for s in data[0] if s[0]])
-        embed = discord.Embed(title="🌍 Übersetzung", color=discord.Color.blurple())
+        embed = discord.Embed(title="🌍 Translation", color=discord.Color.blurple())
         embed.add_field(name="Original", value=text[:1024], inline=False)
-        embed.add_field(name=f"Übersetzung ({SPRACHEN[sprache]})", value=translated[:1024], inline=False)
+        embed.add_field(name=f"Translation ({SPRACHEN[sprache]})", value=translated[:1024], inline=False)
         await interaction.followup.send(embed=embed)
     except Exception as e:
         await interaction.followup.send(f"❌ Übersetzung fehlgeschlagen: {e}", ephemeral=True)
@@ -884,39 +884,39 @@ async def uebersetze(interaction: discord.Interaction, text: str, sprache: str):
 # FUN
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="würfel", description="Würfle einen Würfel.")
-@app_commands.describe(seiten="Anzahl der Seiten (Standard: 6)")
-async def wuerfel(interaction: discord.Interaction, seiten: int = 6):
+@bot.tree.command(name="dice", description="Roll a dice.")
+@app_commands.describe(seiten="Number of sides (default: 6)")
+async def wuerfel(interaction: discord.Interaction, sides: int = 6):
     result = random.randint(1, max(2, seiten))
-    await interaction.response.send_message(f"🎲 **{interaction.user.display_name}** würfelt einen W{seiten}: **{result}**!")
+    await interaction.response.send_message(f"🎲 **{interaction.user.display_name}** rolls a D{seiten}: **{result}**!")
 
-@bot.tree.command(name="münze", description="Wirf eine Münze.")
+@bot.tree.command(name="coin", description="Flip a coin.")
 async def muenze(interaction: discord.Interaction):
-    result = random.choice(["Kopf 👑", "Zahl 🔢"])
+    result = random.choice(["Heads 👑", "Tails 🔢"])
     await interaction.response.send_message(f"🪙 **{result}!**")
 
-@bot.tree.command(name="poll", description="Erstelle eine Abstimmung.")
-@app_commands.describe(frage="Die Frage", option1="Option 1", option2="Option 2", option3="Option 3 (optional)", option4="Option 4 (optional)")
-async def poll(interaction: discord.Interaction, frage: str, option1: str, option2: str, option3: str = None, option4: str = None):
+@bot.tree.command(name="poll", description="Create a poll.")
+@app_commands.describe(frage="The question", option1="Option 1", option2="Option 2", option3="Option 3 (optional)", option4="Option 4 (optional)")
+async def poll(interaction: discord.Interaction, question: str, option1: str, option2: str, option3: str = None, option4: str = None):
     options = [option1, option2]
     if option3: options.append(option3)
     if option4: options.append(option4)
     emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
     description = "\n".join([f"{emojis[i]} {opt}" for i, opt in enumerate(options)])
     embed = discord.Embed(title=f"📊 {frage}", description=description, color=discord.Color.blurple())
-    embed.set_footer(text=f"Abstimmung von {interaction.user.display_name}")
+    embed.set_footer(text=f"Poll by {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
     msg = await interaction.original_response()
     for i in range(len(options)):
         await msg.add_reaction(emojis[i])
 
-@bot.tree.command(name="remind", description="Setze eine Erinnerung.")
-@app_commands.describe(minuten="In wie vielen Minuten?", nachricht="Woran soll ich erinnern?")
-async def remind(interaction: discord.Interaction, minuten: int, nachricht: str):
-    await interaction.response.send_message(f"⏰ Ich erinnere dich in **{minuten} Minuten** an: **{nachricht}**", ephemeral=True)
+@bot.tree.command(name="remind", description="Set a reminder.")
+@app_commands.describe(minuten="In how many minutes?", nachricht="What should I remind you of?")
+async def remind(interaction: discord.Interaction, minutes: int, message: str):
+    await interaction.response.send_message(f"⏰ I will remind you in **{minuten} minutes** about: **{nachricht}**", ephemeral=True)
     await asyncio.sleep(minuten * 60)
     try:
-        await interaction.user.send(f"⏰ Erinnerung: **{nachricht}**")
+        await interaction.user.send(f"⏰ Reminder: **{nachricht}**")
     except:
         pass
 
@@ -924,39 +924,39 @@ async def remind(interaction: discord.Interaction, minuten: int, nachricht: str)
 # INFO
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="userinfo", description="Zeigt Infos über einen Nutzer.")
-@app_commands.describe(user="Nutzer (optional)")
+@bot.tree.command(name="userinfo", description="Show info about a user.")
+@app_commands.describe(user="User (optional)")
 async def userinfo(interaction: discord.Interaction, user: discord.Member = None):
     user = user or interaction.user
     embed = discord.Embed(title=f"👤 {user}", color=user.color)
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.add_field(name="ID", value=str(user.id), inline=True)
-    embed.add_field(name="Beigetreten", value=user.joined_at.strftime("%d.%m.%Y"), inline=True)
-    embed.add_field(name="Account erstellt", value=user.created_at.strftime("%d.%m.%Y"), inline=True)
+    embed.add_field(name="Joined", value=user.joined_at.strftime("%d.%m.%Y"), inline=True)
+    embed.add_field(name="Account created", value=user.created_at.strftime("%d.%m.%Y"), inline=True)
     roles = [r.mention for r in user.roles if r != interaction.guild.default_role]
-    embed.add_field(name=f"Rollen ({len(roles)})", value=", ".join(roles) if roles else "Keine", inline=False)
+    embed.add_field(name=f"Rollen ({len(roles)})", value=", ".join(roles) if roles else "None", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="serverinfo", description="Zeigt Infos über den Server.")
+@bot.tree.command(name="serverinfo", description="Show server info.")
 async def serverinfo(interaction: discord.Interaction):
     g = interaction.guild
     embed = discord.Embed(title=f"🏠 {g.name}", color=discord.Color.blurple())
     if g.icon:
         embed.set_thumbnail(url=g.icon.url)
-    embed.add_field(name="Mitglieder", value=str(g.member_count), inline=True)
-    embed.add_field(name="Erstellt", value=g.created_at.strftime("%d.%m.%Y"), inline=True)
+    embed.add_field(name="Members", value=str(g.member_count), inline=True)
+    embed.add_field(name="Created", value=g.created_at.strftime("%d.%m.%Y"), inline=True)
     embed.add_field(name="Boost Level", value=str(g.premium_tier), inline=True)
-    embed.add_field(name="Textkanäle", value=str(len(g.text_channels)), inline=True)
-    embed.add_field(name="Voicekanäle", value=str(len(g.voice_channels)), inline=True)
-    embed.add_field(name="Rollen", value=str(len(g.roles)), inline=True)
+    embed.add_field(name="Text Channels", value=str(len(g.text_channels)), inline=True)
+    embed.add_field(name="Voice Channels", value=str(len(g.voice_channels)), inline=True)
+    embed.add_field(name="Roles", value=str(len(g.roles)), inline=True)
     await interaction.response.send_message(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN SETUP
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="setup", description="Richtet das TempVC-System ein.")
-@app_commands.describe(channel="Creator-Channel", category="Kategorie für Temp-Channels")
+@bot.tree.command(name="setup", description="Set up the TempVC system.")
+@app_commands.describe(channel="Creator channel", category="Category for temp channels")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup(interaction: discord.Interaction, channel: discord.VoiceChannel, category: discord.CategoryChannel):
     cfg = get_guild_config(interaction.guild.id)
@@ -964,54 +964,54 @@ async def setup(interaction: discord.Interaction, channel: discord.VoiceChannel,
     cfg["category_id"] = category.id
     cfg.setdefault("temp_channels", {})
     save_guild_config(interaction.guild.id, cfg)
-    embed = discord.Embed(title="✅ TempVC Setup abgeschlossen", color=discord.Color.green())
-    embed.add_field(name="Creator-Channel", value=channel.mention, inline=True)
-    embed.add_field(name="Kategorie", value=category.name, inline=True)
+    embed = discord.Embed(title="✅ TempVC Setup complete", color=discord.Color.green())
+    embed.add_field(name="Creator channel", value=channel.mention, inline=True)
+    embed.add_field(name="Category", value=category.name, inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="setwelcome", description="Setzt den Willkommens-Channel.")
-@app_commands.describe(channel="Willkommens-Channel", nachricht="Nachricht ({user} = Erwähnung)")
+@bot.tree.command(name="setwelcome", description="Set the welcome channel.")
+@app_commands.describe(channel="Willkommens-Channel", nachricht="Message ({user} = mention)")
 @app_commands.checks.has_permissions(administrator=True)
-async def setwelcome(interaction: discord.Interaction, channel: discord.TextChannel, nachricht: str = "Willkommen auf dem Server, {user}! 🎉"):
+async def setwelcome(interaction: discord.Interaction, channel: discord.TextChannel, message: str = "Willkommen auf dem Server, {user}! 🎉"):
     cfg = get_guild_config(interaction.guild.id)
     cfg["welcome_channel_id"] = channel.id
     cfg["welcome_message"] = nachricht
     save_guild_config(interaction.guild.id, cfg)
-    await interaction.response.send_message(f"✅ Willkommens-Channel: {channel.mention}", ephemeral=True)
+    await interaction.response.send_message(f"✅ Welcome channel set: {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="setlog", description="Setzt den Log-Channel.")
+@bot.tree.command(name="setlog", description="Set the log channel.")
 @app_commands.describe(channel="Log-Channel")
 @app_commands.checks.has_permissions(administrator=True)
 async def setlog(interaction: discord.Interaction, channel: discord.TextChannel):
     cfg = get_guild_config(interaction.guild.id)
     cfg["log_channel_id"] = channel.id
     save_guild_config(interaction.guild.id, cfg)
-    await interaction.response.send_message(f"✅ Log-Channel: {channel.mention}", ephemeral=True)
+    await interaction.response.send_message(f"✅ Log channel set: {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="setautorole", description="Setzt die Auto-Rolle für neue Mitglieder.")
+@bot.tree.command(name="setautorole", description="Set the auto role for new members.")
 @app_commands.describe(role="Rolle")
 @app_commands.checks.has_permissions(administrator=True)
 async def setautorole(interaction: discord.Interaction, role: discord.Role):
     cfg = get_guild_config(interaction.guild.id)
     cfg["auto_role_id"] = role.id
     save_guild_config(interaction.guild.id, cfg)
-    await interaction.response.send_message(f"✅ Auto-Rolle: **{role.name}**", ephemeral=True)
+    await interaction.response.send_message(f"✅ Auto role set: **{role.name}**", ephemeral=True)
 
-@bot.tree.command(name="setschannel", description="Setzt den Star Citizen Spieler-Channel.")
-@app_commands.describe(channel="Der Voice- oder Text-Channel der aktualisiert werden soll")
+@bot.tree.command(name="setschannel", description="Set the Star Citizen player count channel.")
+@app_commands.describe(channel="The voice channel to update")
 @app_commands.checks.has_permissions(administrator=True)
 async def setschannel(interaction: discord.Interaction, channel: discord.VoiceChannel):
     cfg = get_guild_config(interaction.guild.id)
     cfg["sc_channel_id"] = channel.id
     save_guild_config(interaction.guild.id, cfg)
-    await interaction.response.send_message(f"✅ Star Citizen Channel gesetzt: {channel.mention}\nWird alle 5 Minuten aktualisiert.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Star Citizen channel set: {channel.mention}\nUpdates every 5 minutes.", ephemeral=True)
 
 # ─── Error Handler ────────────────────────────────────────────────────────────
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ Du hast keine Berechtigung für diesen Befehl.", ephemeral=True)
+        await interaction.response.send_message("❌ You do not have permission for this command.", ephemeral=True)
     else:
         try:
             await interaction.response.send_message(f"❌ Fehler: {str(error)}", ephemeral=True)
