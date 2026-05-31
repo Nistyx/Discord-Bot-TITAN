@@ -43,18 +43,18 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 config = load_config()
 
-xp_data = defaultdict(lambda: defaultdict(lambda: {"xp": 0, "level": 0, "voice_joined": None}))
+xp_data = defaultdict(lambda: defaultdict(lambda: {"xp": 0, "level": 0, "voice_joined": None, "last_message": 0}))
 warns_data = defaultdict(lambda: defaultdict(list))
 # Musik-Queue: guild_id -> list of {"title": str, "url": str}
 music_queues = defaultdict(list)
 # Aktive Giveaways: guild_id -> list of {"message_id", "channel_id", "prize", "end_time", "winners"}
 giveaways = defaultdict(list)
 
-XP_PER_MESSAGE = 15
-XP_PER_VOICE_MINUTE = 5
+XP_PER_MESSAGE = 10
+XP_PER_VOICE_MINUTE = 3
 
 def xp_for_level(level):
-    return 100 * (level + 1)
+    return 250 * (level + 1)
 
 async def send_log(guild, message: str, color=discord.Color.blurple()):
     cfg = get_guild_config(guild.id)
@@ -137,6 +137,10 @@ async def on_message(message: discord.Message):
     uid = str(message.author.id)
     gid = str(message.guild.id)
     user_xp = xp_data[gid][uid]
+    now = datetime.datetime.utcnow().timestamp()
+    if now - user_xp.get("last_message", 0) < 60:
+        return
+    user_xp["last_message"] = now
     user_xp["xp"] += XP_PER_MESSAGE
     needed = xp_for_level(user_xp["level"])
     if user_xp["xp"] >= needed:
